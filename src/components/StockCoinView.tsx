@@ -20,7 +20,7 @@ import {
   CoinLedgerResult,
 } from '../services/sheetsApi';
 import { formatIndonesianDate, formatRupiah } from '../utils/dateUtils';
-import { isUserAdmin, addAdminEmail } from '../config/roles';
+import { isUserAdmin, addAdminEmail, AppLayer } from '../config/roles';
 
 interface StockCoinViewProps {
   selectedDate: string;
@@ -28,6 +28,7 @@ interface StockCoinViewProps {
   spreadsheetId: string | null;
   accessToken: string | null;
   userEmail?: string | null;
+  activeLayer?: AppLayer;
   onRefresh: () => void;
 }
 
@@ -53,9 +54,10 @@ export const StockCoinView: React.FC<StockCoinViewProps> = ({
   spreadsheetId,
   accessToken,
   userEmail,
+  activeLayer = 'cashier',
   onRefresh,
 }) => {
-  const isAdmin = isUserAdmin(userEmail);
+  const isOwnerMode = Boolean(isUserAdmin(userEmail) && activeLayer === 'owner');
 
   const [coinLedger, setCoinLedger] = useState<CoinLedgerResult | null>(null);
   const [isLoadingCoin, setIsLoadingCoin] = useState(false);
@@ -219,7 +221,7 @@ export const StockCoinView: React.FC<StockCoinViewProps> = ({
         </div>
 
         <div>
-          {isAdmin ? (
+          {isOwnerMode ? (
             <span className="inline-flex items-center text-[10px] font-bold uppercase px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
               <Shield className="w-3 h-3 mr-1" /> Admin / Owner
             </span>
@@ -405,30 +407,71 @@ export const StockCoinView: React.FC<StockCoinViewProps> = ({
             </div>
           </div>
 
-          <div className="flex justify-end pt-1">
-            <button
-              type="submit"
-              disabled={isSavingOpname}
-              className="flex items-center space-x-1.5 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-bold text-xs rounded-xl shadow-xs transition cursor-pointer"
-            >
-              {isSavingOpname ? (
-                <>
-                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Menyimpan ke Tab COIN...</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Simpan &amp; Rekonsiliasi Opname</span>
-                </>
-              )}
-            </button>
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            {!isOwnerMode ? (
+              <span className="text-[11px] text-slate-600 font-medium flex items-center gap-1.5 bg-amber-50 px-3 py-1.5 rounded-xl border border-amber-200">
+                <Lock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                <span>Otorisasi Rekonsiliasi Resmi Tab COIN Khusus Admin (Revan &amp; Jakson)</span>
+              </span>
+            ) : <div />}
+
+            {isOwnerMode ? (
+              <button
+                type="submit"
+                disabled={isSavingOpname}
+                className="flex items-center space-x-1.5 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-bold text-xs rounded-xl shadow-xs transition-all transform active:scale-95 active:brightness-95 hover:shadow-md cursor-pointer select-none"
+              >
+                {isSavingOpname ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Menyimpan ke Tab COIN...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Otorisasi &amp; Simpan Rekonsiliasi (Admin)</span>
+                  </>
+                )}
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled
+                className="flex items-center space-x-1.5 px-4 py-2 bg-slate-200 text-slate-400 font-bold text-xs rounded-xl cursor-not-allowed select-none"
+                title="Hanya Admin yang berwenang menyimpan rekonsiliasi ke Google Sheet"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span>Simpan Terkunci (Khusus Admin)</span>
+              </button>
+            )}
           </div>
         </form>
       </div>
 
       {/* 3. Live Inventory Stock Table & Admin Controls */}
       <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-3">
+        {/* Low Stock Warning Banner for Cashier and Owner */}
+        {stocks.filter((item) => item.remaining <= 10).length > 0 && (
+          <div className="p-3 bg-amber-50 border-2 border-amber-300 rounded-xl text-amber-900 text-xs flex items-start space-x-2.5 shadow-xs">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <span className="font-black text-xs sm:text-sm block text-amber-950">
+                ⚠️ PERINGATAN KASIR: STOK MENIPIS!
+              </span>
+              <p className="mt-0.5 leading-relaxed text-[11px]">
+                Terdapat <b>{stocks.filter((item) => item.remaining <= 10).length} produk</b> dengan sisa stok di bawah 10 pcs:{' '}
+                <span className="font-bold text-rose-700">
+                  {stocks
+                    .filter((item) => item.remaining <= 10)
+                    .map((i) => `${i.name} (sisa ${i.remaining})`)
+                    .join(', ')}
+                </span>
+                . Kasir hanya dapat melihat stok; harap hubungi <b>Revan &amp; Jakson (Owner)</b> untuk restock.
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <Package className="w-4 h-4 text-emerald-600" />
@@ -437,26 +480,26 @@ export const StockCoinView: React.FC<StockCoinViewProps> = ({
 
           {/* Admin Stock Action Buttons */}
           <div className="flex items-center space-x-1.5">
-            {isAdmin ? (
+            {isOwnerMode ? (
               <>
                 <button
                   onClick={() => setShowRestockModal(true)}
-                  className="inline-flex items-center space-x-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition shadow-xs cursor-pointer"
+                  className="inline-flex items-center space-x-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-all transform active:scale-95 shadow-xs cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Restock</span>
                 </button>
                 <button
                   onClick={() => setShowAddItemModal(true)}
-                  className="inline-flex items-center space-x-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-lg transition shadow-xs cursor-pointer"
+                  className="inline-flex items-center space-x-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-lg transition-all transform active:scale-95 shadow-xs cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>+ Item Baru</span>
                 </button>
               </>
             ) : (
-              <span className="text-[11px] text-slate-400 flex items-center gap-1 font-medium">
-                <Lock className="w-3 h-3" /> Input stok (khusus admin)
+              <span className="text-[11px] text-slate-500 bg-slate-100 px-2.5 py-1 rounded-lg flex items-center gap-1 font-semibold border border-slate-200">
+                <Lock className="w-3 h-3 text-slate-400" /> Input stok (khusus Owner)
               </span>
             )}
           </div>
@@ -472,7 +515,7 @@ export const StockCoinView: React.FC<StockCoinViewProps> = ({
                 <th className="p-2.5 text-center">Stok Awal</th>
                 <th className="p-2.5 text-center">Terjual (Lunas)</th>
                 <th className="p-2.5 text-center">Sisa Stok</th>
-                {isAdmin && <th className="p-2.5 text-right">Aksi</th>}
+                {isOwnerMode && <th className="p-2.5 text-right">Aksi</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -495,7 +538,7 @@ export const StockCoinView: React.FC<StockCoinViewProps> = ({
                         {item.remaining} {isLow ? '⚠️ Menipis' : 'pcs'}
                       </span>
                     </td>
-                    {isAdmin && (
+                    {isOwnerMode && (
                       <td className="p-2.5 text-right">
                         <button
                           onClick={() => {

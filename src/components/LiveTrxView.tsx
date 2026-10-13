@@ -18,10 +18,12 @@ import {
   HelpCircle,
   Plus,
   Pencil,
+  Receipt,
 } from 'lucide-react';
 import { DayBlockResult, SheetTransactionRow, TransactionInput } from '../services/sheetsApi';
 import { formatIndonesianDate, formatRupiah } from '../utils/dateUtils';
 import { EditTransactionModal } from './EditTransactionModal';
+import { ReceiptModal } from './ReceiptModal';
 
 interface LiveTrxViewProps {
   selectedDate: string;
@@ -52,6 +54,7 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'LUNAS' | 'TIDAK LUNAS'>('ALL');
   const [showRawInspector, setShowRawInspector] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<SheetTransactionRow | null>(null);
+  const [receiptTransaction, setReceiptTransaction] = useState<SheetTransactionRow | null>(null);
 
   // Filter filled transactions
   const filledRows = (dayBlock?.rows || []).filter((r) => !r.isEmpty);
@@ -320,11 +323,21 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
                             Note: {trx.note}
                           </div>
                         )}
+                        {/* Print / View Receipt Button */}
+                        <button
+                          type="button"
+                          onClick={() => setReceiptTransaction(trx)}
+                          className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-[11px] transition-all transform active:scale-95 active:brightness-95 hover:shadow-xs cursor-pointer select-none"
+                          title="Cetak & Download Struk"
+                        >
+                          <Receipt className="w-3 h-3" />
+                          <span>Struk</span>
+                        </button>
                         {onUpdateTransaction && (
                           <button
                             type="button"
                             onClick={() => setEditingTransaction(trx)}
-                            className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-[11px] transition cursor-pointer"
+                            className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-[11px] transition-all transform active:scale-95 active:brightness-95 hover:shadow-xs cursor-pointer select-none"
                           >
                             <Pencil className="w-3 h-3" />
                             <span>Edit</span>
@@ -346,7 +359,7 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
               </h4>
               <p className="text-xs text-slate-500 max-w-sm mx-auto">
                 {filledRows.length === 0
-                  ? `Day Block untuk tanggal ini masih kosong (tersedia 20 baris input). Setiap transaksi yang diketik langsung di Google Sheet atau diinput via form aplikasi akan otomatis tersimpan di sini.`
+                  ? 'Belum ada transaksi yang dicatat untuk tanggal ini.'
                   : 'Ubah kata kunci pencarian atau filter status untuk melihat transaksi lainnya.'}
               </p>
               {filledRows.length === 0 && onGoToBatch && (
@@ -445,6 +458,14 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
               }
             }}
             isSaving={isUpdating}
+          />
+
+          {/* Customer Receipt Modal */}
+          <ReceiptModal
+            isOpen={Boolean(receiptTransaction)}
+            onClose={() => setReceiptTransaction(null)}
+            transaction={receiptTransaction}
+            selectedDate={selectedDate}
           />
         </>
       )}

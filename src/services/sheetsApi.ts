@@ -791,3 +791,299 @@ export async function saveCoinOpname(
 
   return response.ok;
 }
+
+/**
+ * Reads customer list from Google Spreadsheet if a tab like PELANGGAN / CUSTOMER exists
+ */
+export async function readCustomersFromSpreadsheet(
+  spreadsheetId: string,
+  accessToken: string,
+  preferredTabName?: string
+): Promise<{
+  found: boolean;
+  tabMissing?: boolean;
+  tabName?: string;
+  customers: any[];
+  availableTabs?: string[];
+  error?: string;
+}> {
+  try {
+    const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`;
+    const metaRes = await fetch(metaUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!metaRes.ok) {
+      throw new Error(`Gagal membaca metadata spreadsheet: ${metaRes.statusText}`);
+    }
+    const metaData = await metaRes.json();
+    const sheetTitles: string[] = (metaData.sheets || []).map((s: any) => s.properties.title);
+
+    let targetTab = preferredTabName;
+    if (!targetTab) {
+      const candidates = [
+        'PELANGGAN',
+        'CUSTOMER',
+        'CUSTOMERS',
+        'DATA PELANGGAN',
+        'DATA CUSTOMER',
+        'MEMBER',
+        'MEMBERS',
+        'DATA MEMBER',
+        'KONSUMEN',
+        'CLIENT',
+        'PELANGGAN TRCN',
+        'DAFTAR PELANGGAN',
+      ];
+      targetTab =
+        sheetTitles.find((t) => candidates.includes(t.trim().toUpperCase())) ||
+        sheetTitles.find(
+          (t) =>
+            t.toUpperCase().includes('PELANGGAN') ||
+            t.toUpperCase().includes('CUSTOMER') ||
+            t.toUpperCase().includes('MEMBER') ||
+            t.toUpperCase().includes('KONSUMEN')
+        );
+    }
+
+    if (!targetTab) {
+      return {
+        found: false,
+        tabMissing: true,
+        customers: [],
+        availableTabs: sheetTitles,
+        error: 'Tab PELANGGAN atau CUSTOMER belum ditemukan di Google Sheet ini.',
+      };
+    }
+
+    const rangeUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'${encodeURIComponent(
+      targetTab
+    )}'!A1:Z2000?valueRenderOption=FORMATTED_VALUE`;
+    const rangeRes = await fetch(rangeUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!rangeRes.ok) {
+      throw new Error(`Gagal membaca data tab ${targetTab}`);
+    }
+    const rangeData = await rangeRes.json();
+    const rawRows: any[][] = rangeData.values || [];
+
+    if (rawRows.length === 0) {
+      return { found: true, tabName: targetTab, customers: [], availableTabs: sheetTitles };
+    }
+
+    let startIdx = 0;
+    let colCode = 0;
+    let colName = 1;
+    let colAddress = 2;
+    let colPhone = 3;
+
+    const headerRow = (rawRows[0] || []).map((h) => String(h || '').trim().toUpperCase());
+    const hasHeader = headerRow.some(
+      (h) =>
+        h.includes('KODE') ||
+        h.includes('CODE') ||
+        h.includes('NAMA') ||
+        h.includes('CUSTOMER') ||
+        h.includes('PHONE') ||
+        h.includes('HP')
+    );
+
+    if (hasHeader) {
+      startIdx = 1;
+      headerRow.forEach((col, idx) => {
+        if (col.includes('KODE') || col.includes('CODE') || col.includes('ID')) colCode = idx;
+        else if (col.includes('NAMA') || col.includes('CUSTOMER') || col.includes('MEMBER') || col.includes('NAME'))
+          colName = idx;
+        else if (
+          col.includes('ALAMAT') ||
+          col.includes('ADDRESS') ||
+          col.includes('ADRESS') ||
+          col.includes('WILAYAH') ||
+          col.includes('KOS')
+        )
+          colAddress = idx;
+        else if (
+          col.includes('HP') ||
+          col.includes('PHONE') ||
+          col.includes('WA') ||
+          col.includes('TELEPON') ||
+          col.includes('TELP')
+        )
+          colPhone = idx;
+      });
+    }
+
+    const customers: any[] = [];
+    for (let i = startIdx; i < rawRows.length; i++) {
+      const row = rawRows[i];
+      if (!row || row.length === 0) continue;
+      const name = String(row[colName] || '').trim();
+      if (!name) continue;
+
+      const code = String(row[colCode] || '').trim();
+      const address = String(row[colAddress] || 'UNAI').trim();
+      const phone = String(row[colPhone] || '').trim();
+
+      customers.push({
+        code: code || `TRCN-${String(i + 1).padStart(3, '0')}`,
+        name: name.toUpperCase(),
+        address: address || 'UNAI',
+        phone: phone || '',
+      });
+    }
+
+    return { found: true, tabName: targetTab, customers, availableTabs: sheetTitles };
+  } catch (err: any) {
+    console.error('Error reading customers from spreadsheet:', err);
+    return { found: false, customers: [], error: err.message || 'Gagal membaca tab pelanggan' };
+  }
+}
+
+/**
+ * Appends a new customer row to the PELANGGAN / CUSTOMER sheet tab.
+ * If tab does not exist, it will auto-create the tab and seed header first!
+ */
+export async function appendCustomerToSpreadsheet(
+  spreadsheetId: string,
+  accessToken: string,
+  customer: { code: string; name: string; address: string; phone: string },
+  targetTabName = 'PELANGGAN'
+): Promise<boolean> {
+  try {
+    const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'${encodeURIComponent(
+      targetTabName
+    )}'!A:D:append?valueInputOption=USER_ENTERED`;
+    let res = await fetch(appendUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        values: [[customer.code, customer.name, customer.address, customer.phone]],
+      }),
+    });
+
+    if (!res.ok) {
+      // If error is due to missing tab, auto-create tab and retry!
+      const errText = await res.text();
+      console.warn(`Append customer failed (${res.status}), checking if tab "${targetTabName}" needs creation:`, errText);
+      
+      const seedRes = await createAndSeedCustomerSheetTab(
+        spreadsheetId,
+        accessToken,
+        [customer],
+        targetTabName
+      );
+      return seedRes.success;
+    }
+
+    return res.ok;
+  } catch (e) {
+    console.warn('Could not append customer to sheet:', e);
+    return false;
+  }
+}
+
+/**
+ * Creates a tab named 'PELANGGAN' in the Google Spreadsheet and seeds all customer records
+ */
+export async function createAndSeedCustomerSheetTab(
+  spreadsheetId: string,
+  accessToken: string,
+  customers: { code: string; name: string; address: string; phone: string }[],
+  tabName = 'PELANGGAN'
+): Promise<{ success: boolean; tabName: string; seededCount: number; error?: string }> {
+  try {
+    // 1. Check if tab already exists, if not create it
+    const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`;
+    const metaRes = await fetch(metaUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!metaRes.ok) throw new Error(`Gagal akses spreadsheet: ${metaRes.statusText}`);
+    const metaData = await metaRes.json();
+    const sheetTitles: string[] = (metaData.sheets || []).map((s: any) => s.properties.title);
+
+    if (!sheetTitles.includes(tabName)) {
+      // Add sheet
+      const addSheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`;
+      const addRes = await fetch(addSheetUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          requests: [
+            {
+              addSheet: {
+                properties: {
+                  title: tabName,
+                },
+              },
+            },
+          ],
+        }),
+      });
+      if (!addRes.ok) {
+        const errJson = await addRes.json().catch(() => ({}));
+        throw new Error(errJson.error?.message || 'Gagal membuat tab PELANGGAN');
+      }
+    }
+
+    // 2. Seed header and data
+    const values = [
+      ['CODE', 'NAME', 'ADRESS', 'NO PHONE'],
+      ...customers.map((c) => [c.code, c.name, c.address, c.phone]),
+    ];
+
+    const writeUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'${encodeURIComponent(
+      tabName
+    )}'!A1:D${values.length}?valueInputOption=USER_ENTERED`;
+    const writeRes = await fetch(writeUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        values,
+      }),
+    });
+
+    if (!writeRes.ok) {
+      const errJson = await writeRes.json().catch(() => ({}));
+      throw new Error(errJson.error?.message || 'Gagal mengisi data pelanggan');
+    }
+
+    return { success: true, tabName, seededCount: customers.length };
+  } catch (err: any) {
+    console.error('Error creating/seeding customer tab:', err);
+    return {
+      success: false,
+      tabName,
+      seededCount: 0,
+      error: err.message || 'Gagal menyiapkan tab pelanggan di Google Sheet',
+    };
+  }
+}
+
+/**
+ * Returns all tab names in the spreadsheet
+ */
+export async function getSpreadsheetTabNames(
+  spreadsheetId: string,
+  accessToken: string
+): Promise<string[]> {
+  try {
+    const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`;
+    const metaRes = await fetch(metaUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!metaRes.ok) return [];
+    const metaData = await metaRes.json();
+    return (metaData.sheets || []).map((s: any) => s.properties.title);
+  } catch (e) {
+    return [];
+  }
+}

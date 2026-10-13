@@ -1,7 +1,7 @@
 import React from 'react';
-import { RefreshCw, LogOut, FileSpreadsheet, ShieldCheck, User as UserIcon, Shield } from 'lucide-react';
+import { RefreshCw, LogOut, FileSpreadsheet, ShieldCheck, User as UserIcon, Shield, Layers, UserCheck } from 'lucide-react';
 import { User } from 'firebase/auth';
-import { isUserAdmin } from '../config/roles';
+import { getAppRoleForEmail } from '../config/roles';
 
 interface HeaderProps {
   user: User | null;
@@ -20,7 +20,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenSheetSelector,
   onLogout,
 }) => {
-  const isAdmin = isUserAdmin(user?.email);
+  const role = getAppRoleForEmail(user?.email);
+  const isRoot = user?.email?.toLowerCase() === 'tricoinss@gmail.com';
 
   return (
     <header className="bg-[#0b1329] text-white shadow-md sticky top-0 z-40 border-b border-slate-800">
@@ -41,13 +42,21 @@ export const Header: React.FC<HeaderProps> = ({
           <div>
             <h1 className="text-sm sm:text-base font-bold leading-tight flex items-center gap-1.5">
               <span>TRICOINS Live Kasir</span>
-              {isAdmin ? (
+              {isRoot ? (
+                <span className="text-[10px] font-bold uppercase px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 flex items-center gap-0.5">
+                  <Shield className="w-2.5 h-2.5" /> Super Admin
+                </span>
+              ) : role === 'admin' ? (
                 <span className="text-[10px] font-bold uppercase px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 flex items-center gap-0.5">
                   <Shield className="w-2.5 h-2.5" /> Admin
                 </span>
+              ) : role === 'cashier' ? (
+                <span className="text-[10px] font-bold uppercase px-1.5 py-0.2 rounded-full bg-blue-500/20 text-blue-300 border border-blue-400/30 flex items-center gap-0.5">
+                  <Layers className="w-2.5 h-2.5" /> Kasir
+                </span>
               ) : (
-                <span className="text-[10px] font-bold uppercase px-1.5 py-0.2 rounded-full bg-blue-500/20 text-blue-300 border border-blue-400/30">
-                  Kasir
+                <span className="text-[10px] font-bold uppercase px-1.5 py-0.2 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-400/30 flex items-center gap-0.5">
+                  <UserCheck className="w-2.5 h-2.5" /> Pelanggan
                 </span>
               )}
             </h1>
@@ -70,10 +79,10 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             onClick={onSync}
             disabled={isSyncing}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all transform active:scale-95 active:brightness-95 hover:shadow-md cursor-pointer select-none ${
               isSyncing
                 ? 'bg-blue-900/60 text-blue-200 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-500 text-white shadow active:scale-95'
+                : 'bg-blue-600 hover:bg-blue-500 text-white shadow-sm'
             }`}
             title="Sinkronisasi Data dari Google Sheets"
           >
@@ -96,7 +105,7 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
               <button
                 onClick={onLogout}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition-colors"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition-all transform active:scale-95 active:brightness-95 cursor-pointer select-none"
                 title="Keluar (Sign Out)"
               >
                 <LogOut className="w-4 h-4" />

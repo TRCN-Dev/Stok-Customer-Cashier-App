@@ -1,6 +1,6 @@
 {
-  "name": "TRCN Laundry Kasir & Stok",
-  "description": "Aplikasi mobile-first kasir laundry koin TRCN dan manajemen stok terhubung Google Sheets.",
+  "name": "TRCN App • Sistem Kasir Laundry Koin Modern",
+  "description": "TRCN App - Sistem kasir & operasional cerdas laundry koin modern terintegrasi Google Sheets.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

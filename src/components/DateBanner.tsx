@@ -105,7 +105,7 @@ export const DateBanner: React.FC<DateBannerProps> = ({
             </div>
             <button
               onClick={() => onDateChange(todayISO)}
-              className="text-xs bg-rose-600 text-white font-semibold px-2.5 py-1 rounded-md hover:bg-rose-700 transition shrink-0"
+              className="text-xs bg-rose-600 hover:bg-rose-700 text-white font-bold px-3 py-1.5 rounded-xl shadow-xs transition-all transform active:scale-95 active:brightness-95 hover:shadow-md cursor-pointer select-none shrink-0"
             >
               Reset ke Hari Ini
             </button>

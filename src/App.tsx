@@ -29,15 +29,19 @@ import { DateBanner } from './components/DateBanner';
 import { LiveTrxView } from './components/LiveTrxView';
 import { BatchFormView } from './components/BatchFormView';
 import { StockCoinView } from './components/StockCoinView';
+import { OwnerDashboardView } from './components/OwnerDashboardView';
+import { CustomerPortalView } from './components/CustomerPortalView';
 import { MonthRolloverPlaceholder } from './components/MonthRolloverPlaceholder';
 import { SheetSelectorModal } from './components/SheetSelectorModal';
 import { GoogleSignInCard } from './components/GoogleSignInCard';
+import { AppLayer, isUserAdmin, isUserCashier, getAppRoleForEmail } from './config/roles';
 
 export default function App() {
   // CRITICAL RULE: Set date to device's today (Asia/Jakarta) BEFORE any network call
   const [selectedDate, setSelectedDate] = useState<string>(() => getTodayJakartaISO());
 
-  // Active Tab
+  // Active Tab & Layer
+  const [activeLayer, setActiveLayer] = useState<AppLayer>('cashier');
   const [activeTab, setActiveTab] = useState<MainTabType>('live-trx');
 
   // Auth State
@@ -46,6 +50,27 @@ export default function App() {
   const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
+
+  // Calculate roles
+  const appRole = getAppRoleForEmail(user?.email);
+  const isUserAdminAccount = isUserAdmin(user?.email);
+  const isUserCashierAccount = isUserCashier(user?.email);
+
+  // Automatically enforce user layer based on role when user logs in or switches
+  useEffect(() => {
+    if (user?.email) {
+      const role = getAppRoleForEmail(user.email);
+      if (role === 'customer') {
+        setActiveLayer('customer');
+        setActiveTab('customer-portal');
+      } else if (role === 'cashier') {
+        if (activeLayer === 'owner') {
+          setActiveLayer('cashier');
+          setActiveTab('batch');
+        }
+      }
+    }
+  }, [user?.email]);
 
   // Spreadsheet Selection State
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => {
@@ -232,19 +257,48 @@ export default function App() {
           <Navigation
             activeTab={activeTab}
             onChangeTab={setActiveTab}
+            activeLayer={activeLayer}
+            onChangeLayer={setActiveLayer}
+            isUserAdminAccount={isUserAdminAccount}
+            isUserCashierAccount={isUserCashierAccount}
             liveTrxCount={dayBlock?.filledRowCount}
           />
 
           <main className="flex-1 max-w-4xl w-full mx-auto p-3 sm:p-4">
-            {/* Global Date Banner with Red Alert on non-today */}
-            <DateBanner
-              selectedDate={selectedDate}
-              onDateChange={setSelectedDate}
-              targetTabName={weekInfo.tabName}
-              hasBlockError={Boolean(dayBlock && !dayBlock.found)}
-            />
+            {/* If user is strictly customer, render Customer Portal only */}
+            {appRole === 'customer' ? (
+              <CustomerPortalView
+                todayTransactions={dayBlock?.rows || []}
+                selectedDate={selectedDate}
+              />
+            ) : (
+              <>
+                {/* Global Date Banner with Red Alert on non-today */}
+                <DateBanner
+                  selectedDate={selectedDate}
+                  onDateChange={setSelectedDate}
+                  targetTabName={weekInfo.tabName}
+                  hasBlockError={Boolean(dayBlock && !dayBlock.found)}
+                />
 
-            {/* Tab Views */}
+                {/* Tab Views */}
+                {activeTab === 'owner-dashboard' && isUserAdminAccount && (
+                  <OwnerDashboardView
+                    selectedDate={selectedDate}
+                    dayBlock={dayBlock}
+                    spreadsheetId={spreadsheetId}
+                    spreadsheetName={spreadsheetName}
+                    accessToken={accessToken}
+                  />
+                )}
+
+            {activeTab === 'customer-portal' && (
+              <CustomerPortalView
+                todayTransactions={dayBlock?.rows || []}
+                selectedDate={selectedDate}
+              />
+            )}
+
             {activeTab === 'live-trx' && (
               <LiveTrxView
                 selectedDate={selectedDate}
@@ -268,9 +322,8 @@ export default function App() {
               <BatchFormView
                 selectedDate={selectedDate}
                 targetTabName={dayBlock?.tabName || weekInfo.tabName}
-                availableEmptySlots={
-                  dayBlock ? dayBlock.rows.filter((r) => r.isEmpty).length : 20
-                }
+                spreadsheetId={spreadsheetId}
+                accessToken={accessToken}
                 onSaveBatch={handleSaveBatch}
                 onSuccessRedirect={() => setActiveTab('live-trx')}
                 isSaving={isSavingBatch}
@@ -284,6 +337,7 @@ export default function App() {
                 spreadsheetId={spreadsheetId}
                 accessToken={accessToken}
                 userEmail={user?.email}
+                activeLayer={activeLayer}
                 onRefresh={() => {
                   if (accessToken && spreadsheetId) {
                     loadDayBlock(accessToken, spreadsheetId, selectedDate);
@@ -299,9 +353,11 @@ export default function App() {
                 onSelectSpreadsheet={handleSelectSpreadsheet}
               />
             )}
-          </main>
-        </>
-      )}
+          </>
+        )}
+      </main>
+    </>
+  )}
 
       {/* Sheet Selector Modal */}
       <SheetSelectorModal

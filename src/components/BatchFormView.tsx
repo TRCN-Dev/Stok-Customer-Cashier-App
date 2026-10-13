@@ -16,15 +16,28 @@ import {
   Upload,
   Image as ImageIcon,
   RotateCcw,
+  UserPlus,
+  UserCheck,
+  Sparkles,
 } from 'lucide-react';
-import { TransactionInput, SaveBatchResult } from '../services/sheetsApi';
-import { CustomerRecord, searchCustomer } from '../data/customers';
+import { TransactionInput, SaveBatchResult, appendCustomerToSpreadsheet } from '../services/sheetsApi';
+import {
+  CustomerRecord,
+  searchCustomer,
+  findCustomerExact,
+  getNextCustomerCode,
+  addCustomerRecord,
+  getAllCustomers,
+} from '../data/customers';
 import { formatIndonesianDate, formatRupiah } from '../utils/dateUtils';
+import { QRISCard } from './QRISCard';
 
 interface BatchFormViewProps {
   selectedDate: string;
   targetTabName: string;
-  availableEmptySlots: number;
+  availableEmptySlots?: number;
+  spreadsheetId?: string | null;
+  accessToken?: string | null;
   onSaveBatch: (transactions: TransactionInput[]) => Promise<SaveBatchResult>;
   onSuccessRedirect: () => void;
   isSaving: boolean;
@@ -36,6 +49,11 @@ interface CustomerFormState {
   phoneNumber: string;
   status: 'LUNAS' | 'TIDAK LUNAS';
   paymentMode: 'CASH' | 'QRIS' | 'SPLIT';
+  // Member registration data
+  memberCode?: string;
+  memberAddress?: string;
+  isRegisteredMember?: boolean;
+  isRegisteringNew?: boolean;
   // Pakets
   cuciKeringQty: number; // 20k
   cuciSajaQty: number; // 10k
@@ -65,6 +83,8 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
   selectedDate,
   targetTabName,
   availableEmptySlots,
+  spreadsheetId,
+  accessToken,
   onSaveBatch,
   onSuccessRedirect,
   isSaving,
@@ -85,6 +105,10 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
       id: Math.random().toString(36).substring(2, 9),
       customer: '',
       phoneNumber: '',
+      memberCode: '',
+      memberAddress: '',
+      isRegisteredMember: false,
+      isRegisteringNew: false,
       status: 'LUNAS',
       paymentMode: 'QRIS',
       cuciKeringQty: 1, // Default 1 cuci + kering
@@ -171,6 +195,10 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
     updateCustomer(id, {
       customer: record.name,
       phoneNumber: record.phone,
+      memberCode: record.code,
+      memberAddress: record.address,
+      isRegisteredMember: true,
+      isRegisteringNew: false,
     });
     setActiveSearchId(null);
   };
@@ -217,12 +245,33 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
     });
   };
 
-  // Handle final submission
+  // Handle final submission with customer registration
   const handleConfirmSave = async () => {
     setErrorMsg(null);
     setConfirmationOpen(false);
 
     try {
+      // Register any new customer if cashier opted to register them
+      customerList.forEach((c) => {
+        if (c.customer && c.customer.trim() && c.isRegisteringNew) {
+          const exact = findCustomerExact(c.customer);
+          const nextCode = c.memberCode || exact?.code || getNextCustomerCode();
+          const newRecord: CustomerRecord = {
+            code: nextCode,
+            name: c.customer.trim().toUpperCase(),
+            address: (c.memberAddress || 'UNAI').trim(),
+            phone: (c.phoneNumber || '').trim(),
+          };
+          addCustomerRecord(newRecord);
+
+          if (spreadsheetId && accessToken) {
+            appendCustomerToSpreadsheet(spreadsheetId, accessToken, newRecord).catch((e) =>
+              console.warn('Could not append customer to sheet:', e)
+            );
+          }
+        }
+      });
+
       const payload = prepareTransactions();
       await onSaveBatch(payload);
       onSuccessRedirect();
@@ -239,18 +288,12 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
 
   return (
     <div className="space-y-4 pb-20">
-      {/* Top Banner: Date & Slot info */}
+      {/* Top Banner: Date & Tab info */}
       <div className="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-xs flex items-center justify-between text-xs">
         <div>
           <span className="text-[10px] text-slate-500 font-bold uppercase block">Target Spreadsheet:</span>
           <span className="font-bold text-slate-900 text-sm">{targetTabName}</span>
           <span className="text-slate-500 ml-1.5 font-medium">({formatIndonesianDate(selectedDate)})</span>
-        </div>
-        <div className="text-right">
-          <span className="text-[10px] text-slate-500 font-bold uppercase block">Kapasitas Transaksi:</span>
-          <span className="inline-block px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 font-bold">
-            Bisa tambah tanpa batas (+ baris baru)
-          </span>
         </div>
       </div>
 
@@ -389,6 +432,119 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
                     />
                   </div>
                 </div>
+
+                {/* Member Status / Ask If New Customer & Register Banner */}
+                {customer.customer.trim().length > 0 && (() => {
+                  const exactMatch = findCustomerExact(customer.customer);
+                  const isExisting = Boolean(exactMatch || customer.isRegisteredMember);
+                  const memberCode = customer.memberCode || exactMatch?.code;
+                  const memberAddress = customer.memberAddress || exactMatch?.address;
+
+                  if (isExisting) {
+                    return (
+                      <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 text-xs flex items-center justify-between shadow-2xs">
+                        <div className="flex items-center space-x-2">
+                          <UserCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <div>
+                            <span className="font-bold">Pelanggan Terdaftar:</span>{' '}
+                            <span className="font-mono font-bold text-emerald-700 bg-white px-1.5 py-0.5 rounded border border-emerald-300">
+                              {memberCode}
+                            </span>{' '}
+                            <span className="text-slate-600 text-[11px]">
+                              • {customer.customer} ({memberAddress || 'UNAI'})
+                            </span>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-bold uppercase bg-emerald-200 text-emerald-900 px-2 py-0.5 rounded-full shrink-0">
+                          Member TRCN
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  // If not existing in customer list, ask if this is a new customer and offer registration
+                  return (
+                    <div className="p-3 bg-amber-50/90 border border-amber-300 rounded-xl text-amber-950 text-xs space-y-2.5 animate-in fade-in duration-150">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center space-x-2">
+                          <UserPlus className="w-4 h-4 text-amber-700 shrink-0" />
+                          <div>
+                            <span className="font-bold text-amber-900 text-xs block leading-tight">
+                              Pelanggan Baru (Belum Terdaftar di Member TRCN)
+                            </span>
+                            <span className="text-[11px] text-amber-800">
+                              Apakah Anda ingin mendaftarkan &amp; simpan pelanggan ini ke Database?
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateCustomer(customer.id, {
+                                isRegisteringNew: true,
+                                memberCode: customer.memberCode || getNextCustomerCode(),
+                              });
+                            }}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all transform active:scale-95 shadow-xs cursor-pointer flex items-center gap-1 select-none ${
+                              customer.isRegisteringNew
+                                ? 'bg-emerald-600 text-white shadow-xs'
+                                : 'bg-white text-slate-700 border border-amber-300 hover:bg-amber-100'
+                            }`}
+                          >
+                            <span>✓ Ya, Daftarkan Baru</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateCustomer(customer.id, {
+                                isRegisteringNew: false,
+                              });
+                            }}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all transform active:scale-95 shadow-xs cursor-pointer flex items-center gap-1 select-none ${
+                              !customer.isRegisteringNew
+                                ? 'bg-slate-700 text-white shadow-xs'
+                                : 'bg-white text-slate-700 border border-amber-300 hover:bg-amber-100'
+                            }`}
+                          >
+                            <span>Hanya Tamu (Guest)</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {customer.isRegisteringNew && (
+                        <div className="pt-2 border-t border-amber-200 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                          <div>
+                            <label className="font-bold text-amber-900 block mb-1 text-[11px]">
+                              Kode Member Baru (Otomatis):
+                            </label>
+                            <input
+                              type="text"
+                              disabled
+                              value={customer.memberCode || getNextCustomerCode()}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-amber-100 border border-amber-300 font-mono font-bold text-amber-950 text-xs"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="font-bold text-amber-900 block mb-1 text-[11px]">
+                              Alamat / Wilayah / Kos:
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="Misal: UNAI, BU MINAH, KAMPUNG JOMPOK"
+                              value={customer.memberAddress || ''}
+                              onChange={(e) => updateCustomer(customer.id, { memberAddress: e.target.value })}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-amber-300 font-semibold text-slate-800 text-xs focus:ring-2 focus:ring-amber-500"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* 2. Paket Laundry Section */}
                 <div className="space-y-2 pt-2 border-t border-slate-100">
@@ -561,99 +717,140 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
                   </div>
                 </div>
 
-                {/* 4. Coins (Washer & Dryer editable) */}
-                <div className="space-y-1.5 pt-2 border-t border-slate-100">
-                  <span className="font-bold text-slate-800 text-xs uppercase tracking-wider block">
-                    Koin Diberikan ke Customer:
-                  </span>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="p-2.5 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center justify-between">
-                      <div className="flex items-center space-x-2">
-                        <span className="w-7 h-7 rounded-lg bg-cyan-600 text-white font-bold text-xs flex items-center justify-center">
-                          W
-                        </span>
-                        <span className="font-bold text-cyan-900 text-xs">Washer</span>
-                      </div>
-                      <div className="flex items-center space-x-1.5">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            updateCustomer(customer.id, {
-                              washerCoins: Math.max(0, customer.washerCoins - 1),
-                            })
-                          }
-                          className="w-6 h-6 rounded bg-white text-cyan-800 border border-cyan-300 font-bold"
-                        >
-                          -
-                        </button>
-                        <input
-                          type="number"
-                          value={customer.washerCoins}
-                          onChange={(e) =>
-                            updateCustomer(customer.id, {
-                              washerCoins: Math.max(0, parseInt(e.target.value) || 0),
-                            })
-                          }
-                          className="w-10 text-center font-bold text-sm bg-white rounded border border-cyan-300 py-0.5"
-                        />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            updateCustomer(customer.id, {
-                              washerCoins: customer.washerCoins + 1,
-                            })
-                          }
-                          className="w-6 h-6 rounded bg-cyan-600 text-white font-bold"
-                        >
-                          +
-                        </button>
-                      </div>
-                    </div>
+                {/* 4. Coins: Auto-calculated based on transaction, only add extra on issue/kendala */}
+                {(() => {
+                  const baseWasher = (customer.cuciKeringQty || 0) + (customer.cuciSajaQty || 0);
+                  const baseDryer = (customer.cuciKeringQty || 0) + (customer.keringSajaQty || 0);
+                  const extraWasher = Math.max(0, customer.washerCoins - baseWasher);
+                  const extraDryer = Math.max(0, customer.dryerCoins - baseDryer);
+                  const hasExtra = extraWasher > 0 || extraDryer > 0;
 
-                    <div className="p-2.5 rounded-xl bg-orange-50 border border-orange-200 flex items-center justify-between">
-                      <div className="flex items-center space-x-2">
-                        <span className="w-7 h-7 rounded-lg bg-orange-600 text-white font-bold text-xs flex items-center justify-center">
-                          D
-                        </span>
-                        <span className="font-bold text-orange-900 text-xs">Dryer</span>
+                  return (
+                    <div className="space-y-2 pt-2 border-t border-slate-100">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="font-bold text-slate-800 text-xs uppercase tracking-wider block">
+                            Koin Berdasarkan Transaksi:
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            Dasar: {baseWasher} Washer, {baseDryer} Dryer
+                          </span>
+                        </div>
+                        {hasExtra && (
+                          <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 font-bold text-[10px]">
+                            ⚠️ +{extraWasher + extraDryer} Koin Tambahan (Kendala Mesin)
+                          </span>
+                        )}
                       </div>
-                      <div className="flex items-center space-x-1.5">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            updateCustomer(customer.id, {
-                              dryerCoins: Math.max(0, customer.dryerCoins - 1),
-                            })
-                          }
-                          className="w-6 h-6 rounded bg-white text-orange-800 border border-orange-300 font-bold"
-                        >
-                          -
-                        </button>
-                        <input
-                          type="number"
-                          value={customer.dryerCoins}
-                          onChange={(e) =>
-                            updateCustomer(customer.id, {
-                              dryerCoins: Math.max(0, parseInt(e.target.value) || 0),
-                            })
-                          }
-                          className="w-10 text-center font-bold text-sm bg-white rounded border border-orange-300 py-0.5"
-                        />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            updateCustomer(customer.id, {
-                              dryerCoins: customer.dryerCoins + 1,
-                            })
-                          }
-                          className="w-6 h-6 rounded bg-orange-600 text-white font-bold"
-                        >
-                          +
-                        </button>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        {/* Washer Counter */}
+                        <div className="p-2.5 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <span className="w-7 h-7 rounded-lg bg-cyan-600 text-white font-bold text-xs flex items-center justify-center">
+                              W
+                            </span>
+                            <div>
+                              <span className="font-bold text-cyan-900 text-xs block">Washer</span>
+                              <span className="text-[9px] text-cyan-700">
+                                {baseWasher} paket {extraWasher > 0 ? `+ ${extraWasher} kendala` : ''}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex items-center space-x-1.5">
+                            {customer.washerCoins > baseWasher && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateCustomer(customer.id, {
+                                    washerCoins: Math.max(baseWasher, customer.washerCoins - 1),
+                                  })
+                                }
+                                className="w-6 h-6 rounded bg-white text-cyan-800 border border-cyan-300 font-bold text-xs hover:bg-cyan-100 transition active:scale-95"
+                                title="Kurangi koin tambahan"
+                              >
+                                -
+                              </button>
+                            )}
+                            <span className="w-8 text-center font-black text-sm bg-white rounded-md border border-cyan-300 py-0.5 text-cyan-950">
+                              {customer.washerCoins}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const newW = customer.washerCoins + 1;
+                                const noteTag = '[Koin Tambahan Kendala Mesin]';
+                                const newNote = customer.note.includes(noteTag)
+                                  ? customer.note
+                                  : customer.note ? `${customer.note} ${noteTag}` : noteTag;
+                                updateCustomer(customer.id, {
+                                  washerCoins: newW,
+                                  note: newNote,
+                                });
+                              }}
+                              className="px-2 py-0.5 rounded bg-cyan-600 hover:bg-cyan-700 text-white font-bold text-[11px] transition active:scale-95"
+                              title="Tambah koin Washer karena issue/kendala mesin"
+                            >
+                              + Tambahan
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Dryer Counter */}
+                        <div className="p-2.5 rounded-xl bg-orange-50 border border-orange-200 flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <span className="w-7 h-7 rounded-lg bg-orange-600 text-white font-bold text-xs flex items-center justify-center">
+                              D
+                            </span>
+                            <div>
+                              <span className="font-bold text-orange-900 text-xs block">Dryer</span>
+                              <span className="text-[9px] text-orange-700">
+                                {baseDryer} paket {extraDryer > 0 ? `+ ${extraDryer} kendala` : ''}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex items-center space-x-1.5">
+                            {customer.dryerCoins > baseDryer && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateCustomer(customer.id, {
+                                    dryerCoins: Math.max(baseDryer, customer.dryerCoins - 1),
+                                  })
+                                }
+                                className="w-6 h-6 rounded bg-white text-orange-800 border border-orange-300 font-bold text-xs hover:bg-orange-100 transition active:scale-95"
+                                title="Kurangi koin tambahan"
+                              >
+                                -
+                              </button>
+                            )}
+                            <span className="w-8 text-center font-black text-sm bg-white rounded-md border border-orange-300 py-0.5 text-orange-950">
+                              {customer.dryerCoins}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const newD = customer.dryerCoins + 1;
+                                const noteTag = '[Koin Tambahan Kendala Mesin]';
+                                const newNote = customer.note.includes(noteTag)
+                                  ? customer.note
+                                  : customer.note ? `${customer.note} ${noteTag}` : noteTag;
+                                updateCustomer(customer.id, {
+                                  dryerCoins: newD,
+                                  note: newNote,
+                                });
+                              }}
+                              className="px-2 py-0.5 rounded bg-orange-600 hover:bg-orange-700 text-white font-bold text-[11px] transition active:scale-95"
+                              title="Tambah koin Dryer karena issue/kendala mesin"
+                            >
+                              + Tambahan
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </div>
+                  );
+                })()}
 
                 {/* 5. Payment Mode & Calculator (CASH / QRIS / SPLIT) */}
                 <div className="space-y-3 pt-2 border-t border-slate-100">
@@ -711,51 +908,7 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
 
                   {/* QRIS Display Panel */}
                   {customer.paymentMode === 'QRIS' && (
-                    <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-xl space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-blue-900 text-xs flex items-center gap-1.5">
-                          <QrCode className="w-4 h-4 text-blue-600" />
-                          <span>QRIS Pembayaran ({formatRupiah(grandTotal)})</span>
-                        </span>
-                        <label className="text-[11px] font-semibold text-blue-600 hover:underline cursor-pointer flex items-center gap-1">
-                          <Upload className="w-3 h-3" />
-                          <span>{qrisImage ? 'Ganti QRIS' : 'Upload QRIS'}</span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            onChange={handleQrisUpload}
-                            className="hidden"
-                          />
-                        </label>
-                      </div>
-
-                      {qrisImage ? (
-                        <div className="text-center py-2 bg-white rounded-xl border border-blue-200 p-2 max-w-[200px] mx-auto shadow-xs">
-                          <img
-                            src={qrisImage}
-                            alt="QRIS Laundry TRCN"
-                            className="w-full h-auto object-contain rounded-lg"
-                          />
-                          <p className="text-[10px] font-bold text-slate-600 mt-1">
-                            SCAN UNTUK BAYAR {formatRupiah(grandTotal)}
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="p-4 bg-white rounded-xl border border-dashed border-blue-300 text-center space-y-1">
-                          <ImageIcon className="w-6 h-6 text-blue-400 mx-auto" />
-                          <p className="text-slate-600 font-medium">Belum ada foto QRIS tersimpan.</p>
-                          <label className="inline-block px-3 py-1 bg-blue-600 text-white font-bold rounded-lg text-[11px] cursor-pointer hover:bg-blue-700 transition">
-                            Upload Foto QRIS Toko
-                            <input
-                              type="file"
-                              accept="image/*"
-                              onChange={handleQrisUpload}
-                              className="hidden"
-                            />
-                          </label>
-                        </div>
-                      )}
-                    </div>
+                    <QRISCard amount={grandTotal} customerName={customer.customer} />
                   )}
 
                   {/* CASH Calculator Panel */}
@@ -928,7 +1081,7 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
             type="button"
             onClick={addCustomerCard}
             disabled={isSaving}
-            className="flex items-center space-x-1.5 px-3 sm:px-4 py-2.5 rounded-xl border border-slate-300 hover:bg-slate-100 font-bold text-xs sm:text-sm text-slate-700 transition cursor-pointer disabled:opacity-50"
+            className="flex items-center space-x-1.5 px-3 sm:px-4 py-2.5 rounded-xl border border-slate-300 hover:bg-slate-100 font-bold text-xs sm:text-sm text-slate-700 transition-all transform active:scale-95 active:brightness-95 hover:shadow-xs cursor-pointer select-none disabled:opacity-50"
           >
             <Plus className="w-4 h-4 text-blue-600" />
             <span className="hidden xs:inline">Tambah</span> Customer
@@ -949,7 +1102,7 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
               type="button"
               onClick={() => setConfirmationOpen(true)}
               disabled={isSaving}
-              className="flex items-center space-x-1.5 px-4 sm:px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md transition active:scale-95 cursor-pointer"
+              className="flex items-center space-x-1.5 px-4 sm:px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md transition-all transform active:scale-95 active:brightness-95 hover:shadow-lg cursor-pointer select-none"
             >
               {isSaving ? (
                 <>

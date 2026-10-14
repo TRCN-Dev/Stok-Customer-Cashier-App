@@ -147,12 +147,17 @@ export const OwnerDashboardView: React.FC<OwnerDashboardViewProps> = ({
   const filledRows = (dayBlock?.rows || []).filter((r) => !r.isEmpty);
 
   // Statistics calculation
-  const totalOmzetToday =
-    dayBlock?.headerRow?.totalTxBayar ||
-    filledRows.reduce((sum, r) => sum + (r.bayar || r.hargaCash + r.hargaQris), 0);
+  const liveCashToday = filledRows.reduce((sum, r) => sum + (r.hargaCash || 0), 0);
+  const liveQrisToday = filledRows.reduce((sum, r) => sum + (r.hargaQris || 0), 0);
+  const liveOmzetToday = filledRows.reduce((sum, r) => {
+    if (r.bayar && r.bayar > 0) return sum + r.bayar;
+    if (r.status.toUpperCase() === 'LUNAS') return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
+    return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
+  }, 0);
 
-  const totalCashToday = filledRows.reduce((sum, r) => sum + (r.hargaCash || 0), 0);
-  const totalQrisToday = filledRows.reduce((sum, r) => sum + (r.hargaQris || 0), 0);
+  const totalCashToday = Math.max(dayBlock?.headerRow?.totalCash || 0, liveCashToday);
+  const totalQrisToday = Math.max(dayBlock?.headerRow?.totalQris || 0, liveQrisToday);
+  const totalOmzetToday = Math.max(dayBlock?.headerRow?.totalTxBayar || 0, liveOmzetToday);
 
   const cashTxCount = filledRows.filter((r) => r.hargaCash > 0).length;
   const qrisTxCount = filledRows.filter((r) => r.hargaQris > 0).length;
@@ -160,12 +165,14 @@ export const OwnerDashboardView: React.FC<OwnerDashboardViewProps> = ({
   const totalLunasCount = filledRows.filter((r) => r.status.toUpperCase() === 'LUNAS').length;
   const totalPendingCount = filledRows.filter((r) => r.status.toUpperCase() !== 'LUNAS').length;
 
-  const totalWasherCoins =
-    dayBlock?.headerRow?.totalWasher ||
-    filledRows.reduce((sum, r) => sum + (r.washerCoins || 0), 0);
-  const totalDryerCoins =
-    dayBlock?.headerRow?.totalDryer ||
-    filledRows.reduce((sum, r) => sum + (r.dryerCoins || 0), 0);
+  const totalWasherCoins = Math.max(
+    dayBlock?.headerRow?.totalWasher || 0,
+    filledRows.reduce((sum, r) => sum + (r.washerCoins || 0), 0)
+  );
+  const totalDryerCoins = Math.max(
+    dayBlock?.headerRow?.totalDryer || 0,
+    filledRows.reduce((sum, r) => sum + (r.dryerCoins || 0), 0)
+  );
   const totalCoinsToday = totalWasherCoins + totalDryerCoins;
   const coinRupiahEstimate = totalCoinsToday * 10000;
 

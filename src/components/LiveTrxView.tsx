@@ -58,6 +58,25 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
 
   // Filter filled transactions
   const filledRows = (dayBlock?.rows || []).filter((r) => !r.isEmpty);
+
+  // Live aggregated totals directly from rows (guarantees immediate update even if sheet formula lags)
+  const liveTotalCash = filledRows.reduce((sum, r) => sum + (r.hargaCash || 0), 0);
+  const liveTotalQris = filledRows.reduce((sum, r) => sum + (r.hargaQris || 0), 0);
+  const liveTotalWasher = filledRows.reduce((sum, r) => sum + (r.washerCoins || 0), 0);
+  const liveTotalDryer = filledRows.reduce((sum, r) => sum + (r.dryerCoins || 0), 0);
+  const liveTotalBayar = filledRows.reduce((sum, r) => {
+    if (r.bayar && r.bayar > 0) return sum + r.bayar;
+    if (r.status?.toUpperCase() === 'LUNAS') return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
+    return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
+  }, 0);
+
+  const displayTotalCash = Math.max(dayBlock?.headerRow?.totalCash || 0, liveTotalCash);
+  const displayTotalQris = Math.max(dayBlock?.headerRow?.totalQris || 0, liveTotalQris);
+  const displayTotalBayar = Math.max(dayBlock?.headerRow?.totalTxBayar || 0, liveTotalBayar);
+  const displayTotalWasher = Math.max(dayBlock?.headerRow?.totalWasher || 0, liveTotalWasher);
+  const displayTotalDryer = Math.max(dayBlock?.headerRow?.totalDryer || 0, liveTotalDryer);
+  const displayTxCount = Math.max(dayBlock?.filledRowCount || 0, filledRows.length);
+
   const filteredRows = filledRows.filter((row) => {
     const matchesSearch =
       !searchQuery ||
@@ -131,16 +150,16 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
               <div className="flex items-center justify-between text-blue-200 text-xs font-medium mb-1">
                 <span>TOTAL TRANSAKSI HARI INI</span>
                 <span className="text-[11px] bg-blue-500/30 px-2 py-0.5 rounded-full font-mono">
-                  {dayBlock.filledRowCount} Transaksi (Unlimited)
+                  {displayTxCount} Transaksi (Unlimited)
                 </span>
               </div>
               <div className="text-2xl font-black tracking-tight">
-                {formatRupiah(dayBlock.headerRow?.totalTxBayar || 0)}
+                {formatRupiah(displayTotalBayar)}
               </div>
               <div className="text-[11px] text-blue-200 mt-1 flex items-center gap-2">
-                <span>Cash: {formatRupiah(dayBlock.headerRow?.totalCash || 0)}</span>
+                <span>Cash: {formatRupiah(displayTotalCash)}</span>
                 <span>•</span>
-                <span>QRIS: {formatRupiah(dayBlock.headerRow?.totalQris || 0)}</span>
+                <span>QRIS: {formatRupiah(displayTotalQris)}</span>
               </div>
             </div>
 
@@ -152,7 +171,7 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
               <div>
                 <div className="text-[10px] font-bold text-slate-600 uppercase">Koin Washer</div>
                 <div className="text-lg font-black text-slate-800">
-                  {dayBlock.headerRow?.totalWasher || 0}{' '}
+                  {displayTotalWasher}{' '}
                   <span className="text-xs font-normal text-slate-500">koin</span>
                 </div>
               </div>
@@ -166,7 +185,7 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
               <div>
                 <div className="text-[10px] font-bold text-slate-600 uppercase">Koin Dryer</div>
                 <div className="text-lg font-black text-slate-800">
-                  {dayBlock.headerRow?.totalDryer || 0}{' '}
+                  {displayTotalDryer}{' '}
                   <span className="text-xs font-normal text-slate-500">koin</span>
                 </div>
               </div>

@@ -125,9 +125,43 @@ export async function getSpreadsheetDetails(
  */
 function parseNum(val: any): number {
   if (val === undefined || val === null || val === '') return 0;
-  if (typeof val === 'number') return val;
-  const cleaned = String(val).replace(/[^0-9.-]/g, '');
-  const n = parseFloat(cleaned);
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  let str = String(val).trim();
+  // Strip "Rp", "IDR", spaces, currency symbols
+  str = str.replace(/[^0-9.,-]/g, '');
+  if (!str) return 0;
+
+  // Check if both '.' and ',' exist
+  if (str.includes('.') && str.includes(',')) {
+    if (str.lastIndexOf('.') < str.lastIndexOf(',')) {
+      // Indonesian style: 20.000,00 -> remove '.' and change ',' to '.'
+      str = str.replace(/\./g, '').replace(',', '.');
+    } else {
+      // US style: 20,000.00 -> remove ','
+      str = str.replace(/,/g, '');
+    }
+  } else if (str.includes('.')) {
+    // Has only dots: could be 20.000 (Indonesian 20k) or 20.5 (decimal)
+    const dotParts = str.split('.');
+    if (dotParts.length > 2) {
+      str = str.replace(/\./g, '');
+    } else if (dotParts.length === 2) {
+      // e.g. "20.000" (3 digits after dot) -> thousand separator in Indonesian rupiah
+      if (dotParts[1].length === 3) {
+        str = str.replace(/\./g, '');
+      }
+    }
+  } else if (str.includes(',')) {
+    // Has only commas: could be 20,000 (US 20k) or 20,5 (Indonesian decimal)
+    const commaParts = str.split(',');
+    if (commaParts.length > 2 || (commaParts.length === 2 && commaParts[1].length === 3)) {
+      str = str.replace(/,/g, '');
+    } else {
+      str = str.replace(',', '.');
+    }
+  }
+
+  const n = parseFloat(str);
   return isNaN(n) ? 0 : n;
 }
 
@@ -363,16 +397,6 @@ export async function readDayBlock(
   }
 
   const headerRowData = rawRows[headerRowIndex] || [];
-  const headerSummary: DayHeaderSummary = {
-    rowNumber: headerRowIndex + 1,
-    dateText: String(headerRowData[1] || `Hari ke-${weekInfo.dayOfMonth}`),
-    totalWasher: parseNum(headerRowData[7]),
-    totalDryer: parseNum(headerRowData[8]),
-    totalCash: parseNum(headerRowData[9]),
-    totalQris: parseNum(headerRowData[10]),
-    label: String(headerRowData[12] || 'TOTAL TX'),
-    totalTxBayar: parseNum(headerRowData[13]),
-  };
 
   // Find where the next day header begins (so we can read unlimited rows for this day)
   let nextDayHeaderIndex = rawRows.length;
@@ -415,9 +439,14 @@ export async function readDayBlock(
     const dryerCoins = parseNum(row[8]);
     const hargaCash = parseNum(row[9]);
     const hargaQris = parseNum(row[10]);
-    const bayar = parseNum(row[11]);
+    let bayar = parseNum(row[11]);
     const status = String(row[12] || '').trim() as 'LUNAS' | 'TIDAK LUNAS' | string;
     const note = String(row[13] || '').trim();
+
+    // If bayar is 0 in sheet formula, but status is Lunas and has amounts, resolve bayar
+    if (bayar === 0 && (status.toUpperCase() === 'LUNAS' || !status) && (hargaCash > 0 || hargaQris > 0)) {
+      bayar = hargaCash + hargaQris;
+    }
 
     // Check if slot is empty: no customer and no bayar/amounts
     const isEmpty = !customer && !phoneNumber && !item && !paket && hargaCash === 0 && hargaQris === 0;
@@ -447,6 +476,34 @@ export async function readDayBlock(
       note,
     });
   }
+
+  // Calculate live sums directly from loaded transaction rows
+  const actualCash = rows.filter((r) => !r.isEmpty).reduce((sum, r) => sum + (r.hargaCash || 0), 0);
+  const actualQris = rows.filter((r) => !r.isEmpty).reduce((sum, r) => sum + (r.hargaQris || 0), 0);
+  const actualWasher = rows.filter((r) => !r.isEmpty).reduce((sum, r) => sum + (r.washerCoins || 0), 0);
+  const actualDryer = rows.filter((r) => !r.isEmpty).reduce((sum, r) => sum + (r.dryerCoins || 0), 0);
+  const actualBayar = rows.filter((r) => !r.isEmpty).reduce((sum, r) => {
+    if (r.bayar && r.bayar > 0) return sum + r.bayar;
+    if (r.status?.toUpperCase() === 'LUNAS') return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
+    return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
+  }, 0);
+
+  const parsedHeaderCash = parseNum(headerRowData[9]);
+  const parsedHeaderQris = parseNum(headerRowData[10]);
+  const parsedHeaderWasher = parseNum(headerRowData[7]);
+  const parsedHeaderDryer = parseNum(headerRowData[8]);
+  const parsedHeaderBayar = parseNum(headerRowData[13]);
+
+  const headerSummary: DayHeaderSummary = {
+    rowNumber: headerRowIndex + 1,
+    dateText: String(headerRowData[1] || `Hari ke-${weekInfo.dayOfMonth}`),
+    totalWasher: Math.max(parsedHeaderWasher, actualWasher),
+    totalDryer: Math.max(parsedHeaderDryer, actualDryer),
+    totalCash: Math.max(parsedHeaderCash, actualCash),
+    totalQris: Math.max(parsedHeaderQris, actualQris),
+    label: String(headerRowData[12] || 'TOTAL TX'),
+    totalTxBayar: Math.max(parsedHeaderBayar, actualBayar),
+  };
 
   return {
     found: true,
@@ -535,12 +592,12 @@ export async function saveBatchTransactions(
       rowNum = targetSlot.rowNumber;
       slotNum = targetSlot.slotNumber;
 
-      // Range 1: Columns B to K (Inputs: Customer, Phone, PaymentMode, Item, Jumlah, Paket, Washer, Dryer, HargaCash, HargaQris)
-      // Note: Column A (slot number) and Column L (formula) are preserved
+      // Range A to N: write slot number in A, inputs in B..K, formula in L, status in M, note in N
       updateData.push({
-        range: `'${safeTab}'!B${rowNum}:K${rowNum}`,
+        range: `'${safeTab}'!A${rowNum}:N${rowNum}`,
         values: [
           [
+            slotNum,
             tx.customer || '',
             tx.phoneNumber || '',
             tx.paymentMode || 'CASH',
@@ -551,14 +608,11 @@ export async function saveBatchTransactions(
             tx.dryerCoins || 0,
             tx.hargaCash || 0,
             tx.hargaQris || 0,
+            `=IF(M${rowNum}="LUNAS",N(J${rowNum})+N(K${rowNum}),0)`,
+            tx.status || 'LUNAS',
+            tx.note || '',
           ],
         ],
-      });
-
-      // Range 2: Columns M to N (Status, Note)
-      updateData.push({
-        range: `'${safeTab}'!M${rowNum}:N${rowNum}`,
-        values: [[tx.status || 'LUNAS', tx.note || '']],
       });
     } else {
       // User requested: "dont make it only limited to 20 baris make it more its oke"
@@ -637,7 +691,7 @@ export async function updateSingleTransaction(
   const safeTab = tabName.replace(/'/g, "''");
   const updateData = [
     {
-      range: `'${safeTab}'!B${rowNumber}:K${rowNumber}`,
+      range: `'${safeTab}'!B${rowNumber}:N${rowNumber}`,
       values: [
         [
           tx.customer || '',
@@ -650,12 +704,11 @@ export async function updateSingleTransaction(
           tx.dryerCoins || 0,
           tx.hargaCash || 0,
           tx.hargaQris || 0,
+          `=IF(M${rowNumber}="LUNAS",N(J${rowNumber})+N(K${rowNumber}),0)`,
+          tx.status || 'LUNAS',
+          tx.note || '',
         ],
       ],
-    },
-    {
-      range: `'${safeTab}'!M${rowNumber}:N${rowNumber}`,
-      values: [[tx.status || 'LUNAS', tx.note || '']],
     },
   ];
 

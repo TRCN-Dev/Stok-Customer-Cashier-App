@@ -131,7 +131,7 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
               <div className="flex items-center justify-between text-blue-200 text-xs font-medium mb-1">
                 <span>TOTAL TRANSAKSI HARI INI</span>
                 <span className="text-[11px] bg-blue-500/30 px-2 py-0.5 rounded-full font-mono">
-                  {dayBlock.filledRowCount}/20 Baris
+                  {dayBlock.filledRowCount} Transaksi (Unlimited)
                 </span>
               </div>
               <div className="text-2xl font-black tracking-tight">

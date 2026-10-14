@@ -107,6 +107,7 @@ export default function App() {
 
   // Handle Google Sign In
   const handleGoogleSignIn = async () => {
+    if (isLoggingIn) return;
     setIsLoggingIn(true);
     setAuthError(null);
     try {
@@ -117,8 +118,16 @@ export default function App() {
         setCachedAccessToken(result.accessToken);
       }
     } catch (err: any) {
-      console.error('Sign-in error:', err);
-      setAuthError(err.message || 'Gagal login dengan akun Google. Silakan coba lagi.');
+      const isCancelled =
+        err?.code === 'auth/popup-closed-by-user' ||
+        err?.code === 'auth/cancelled-popup-request' ||
+        err?.message?.includes('popup-closed-by-user') ||
+        err?.message?.includes('INTERNAL ASSERTION FAILED');
+
+      if (!isCancelled) {
+        console.error('Sign-in error:', err);
+        setAuthError(err.message || 'Gagal login dengan akun Google. Silakan coba lagi.');
+      }
     } finally {
       setIsLoggingIn(false);
     }
@@ -228,6 +237,7 @@ export default function App() {
         user={user}
         spreadsheetName={spreadsheetName}
         isSyncing={isLoadingDayBlock}
+        activeTab={activeTab}
         onSync={() => {
           if (accessToken && spreadsheetId) {
             loadDayBlock(accessToken, spreadsheetId, selectedDate);
@@ -238,6 +248,14 @@ export default function App() {
         onOpenSheetSelector={() => setIsSheetSelectorOpen(true)}
         onLogout={handleLogout}
       />
+
+      {/* Loading state during session restoration to prevent blank screen */}
+      {isAuthChecking && (
+        <main className="flex-1 flex flex-col items-center justify-center p-8 space-y-3">
+          <div className="w-10 h-10 border-3 border-blue-600 border-t-transparent rounded-full animate-spin" />
+          <p className="text-xs font-bold text-slate-600">Memulihkan sesi TRICOINS...</p>
+        </main>
+      )}
 
       {/* If Not Signed In, show Google Sign In Card */}
       {!isAuthChecking && !user && (
@@ -289,6 +307,7 @@ export default function App() {
                     spreadsheetId={spreadsheetId}
                     spreadsheetName={spreadsheetName}
                     accessToken={accessToken}
+                    userEmail={user?.email}
                   />
                 )}
 

@@ -275,10 +275,9 @@ export async function readDayBlock(
     }
   }
 
-  // Fetch up to 160 rows of columns A..N
-  // This covers row 1 headers + 7 day blocks (7 * 22 = 154 rows)
+  // Fetch up to 500 rows of columns A..N to support unlimited transaction rows per day block
   const safeTab = targetTab.replace(/'/g, "''");
-  const range = `'${safeTab}'!A1:N160`;
+  const range = `'${safeTab}'!A1:N500`;
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     range
   )}?valueRenderOption=FORMATTED_VALUE`;
@@ -332,9 +331,6 @@ export async function readDayBlock(
   }
 
   // If not found by date string matching, calculate standard slot in week:
-  // In a week tab, days are 1..7 (for Week 1: days 1..7; for Week 2: days 8..14, etc.)
-  // Each day block is exactly 22 rows. Block 0 starts at row 3 (0-indexed: row 3 is 4th row, index 3).
-  // Day index within week = (dayOfMonth - 1) % 7
   if (headerRowIndex === -1) {
     let dayIndexInWeek = 0;
     if (weekInfo.weekNumber === 1) {
@@ -378,32 +374,36 @@ export async function readDayBlock(
     totalTxBayar: parseNum(headerRowData[13]),
   };
 
-  // Now extract the 20 numbered rows (indices headerRowIndex + 1 to headerRowIndex + 20)
+  // Find where the next day header begins (so we can read unlimited rows for this day)
+  let nextDayHeaderIndex = rawRows.length;
+  for (let i = headerRowIndex + 1; i < rawRows.length; i++) {
+    const row = (rawRows[i] || []) as any[];
+    const colM = String(row[12] || '').toUpperCase();
+    if (colM.includes('TOTAL TX')) {
+      nextDayHeaderIndex = i;
+      break;
+    }
+  }
+
+  // Dynamic row extraction: supports unlimited transaction rows (default min 20 rows, or more if present)
   const rows: SheetTransactionRow[] = [];
   let firstEmptyRow: number | undefined = undefined;
   let filledRowCount = 0;
 
-  for (let slot = 1; slot <= 20; slot++) {
-    const rowIndex = headerRowIndex + slot;
-    const row = (rawRows[rowIndex] || []) as any[];
+  const totalSlotsToScan = Math.max(20, nextDayHeaderIndex - (headerRowIndex + 1));
 
+  for (let offset = 1; offset <= totalSlotsToScan; offset++) {
+    const rowIndex = headerRowIndex + offset;
+    // Don't cross into the next day's header
+    if (rowIndex >= nextDayHeaderIndex && nextDayHeaderIndex < rawRows.length) {
+      break;
+    }
+
+    const row = (rawRows[rowIndex] || []) as any[];
     const sheetRowNumber = rowIndex + 1; // 1-indexed
 
-    // Columns:
-    // A (0): NO
-    // B (1): CUSTOMER
-    // C (2): PHONE NUMBER
-    // D (3): QRIS / CASH
-    // E (4): ITEM
-    // F (5): JUMLAH
-    // G (6): PAKET
-    // H (7): WASHER
-    // I (8): DRYER
-    // J (9): HARGA CASH
-    // K (10): HARGA QRIS
-    // L (11): BAYAR
-    // M (12): STATUS
-    // N (13): NOTE
+    const parsedSlot = parseNum(row[0]);
+    const slotNumber = parsedSlot > 0 ? parsedSlot : offset;
 
     const customer = String(row[1] || '').trim();
     const phoneNumber = String(row[2] || '').trim();
@@ -430,7 +430,7 @@ export async function readDayBlock(
 
     rows.push({
       rowNumber: sheetRowNumber,
-      slotNumber: slot,
+      slotNumber,
       isEmpty,
       customer,
       phoneNumber,

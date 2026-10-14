@@ -39,82 +39,85 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     window.print();
   };
 
-  const handleDownloadImage = () => {
-    if (!receiptRef.current) return;
+  const [shareFeedback, setShareFeedback] = React.useState<string | null>(null);
+  const [isGeneratingImg, setIsGeneratingImg] = React.useState(false);
+
+  const generateReceiptCanvas = (): HTMLCanvasElement | null => {
     const canvas = document.createElement('canvas');
     const scale = 2; // high resolution
-    const width = 400;
-    const height = 560;
+    const width = 420;
+    const height = 580;
     canvas.width = width * scale;
     canvas.height = height * scale;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) return null;
 
     ctx.scale(scale, scale);
 
-    // Background
+    // Card background
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, width, height);
 
-    // Border line
+    // Outer subtle border
     ctx.strokeStyle = '#e2e8f0';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 1.5;
     ctx.strokeRect(10, 10, width - 20, height - 20);
 
-    // Header
+    // Deep Navy Header Box
     ctx.fillStyle = '#0b1329';
-    ctx.font = 'bold 18px sans-serif';
+    ctx.fillRect(10, 10, width - 20, 85);
+
+    // Header Text
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 11px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('TRICOINS LAUNDRY', width / 2, 45);
+    ctx.fillText('TRICOINS LAUNDROMAT', width / 2, 35);
 
-    ctx.fillStyle = '#64748b';
-    ctx.font = '11px sans-serif';
-    ctx.fillText('Self-Service Coin Laundromat', width / 2, 62);
-    ctx.fillText('NMID: ID1020261928371 • 07:00 - 21:00 WIB', width / 2, 78);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText('STRUK TRANSAKSI RESMI', width / 2, 58);
 
-    // Divider
-    ctx.strokeStyle = '#cbd5e1';
-    ctx.beginPath();
-    ctx.setLineDash([4, 4]);
-    ctx.moveTo(25, 95);
-    ctx.lineTo(width - 25, 95);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '10px sans-serif';
+    ctx.fillText('Self-Service Coin Laundromat • Buka 07:00 - 21:00 WIB', width / 2, 78);
 
-    // Info details
+    // Order Info Details
     ctx.textAlign = 'left';
-    ctx.fillStyle = '#334155';
+    ctx.fillStyle = '#475569';
     ctx.font = '11px sans-serif';
-    ctx.fillText(`No. Struk : ${receiptNo}`, 25, 115);
-    ctx.fillText(`Tanggal   : ${formatIndonesianDate(selectedDate)}`, 25, 133);
-    ctx.fillText(`Pelanggan : ${transaction.customer || 'Pelanggan'}`, 25, 151);
+    ctx.fillText(`No. Struk : ${receiptNo}`, 25, 120);
+    ctx.fillText(`Tanggal   : ${formatIndonesianDate(selectedDate)}`, 25, 138);
+    ctx.fillText(`Pelanggan : ${transaction.customer || 'Pelanggan'}`, 25, 156);
     if (transaction.phoneNumber) {
-      ctx.fillText(`No. HP    : ${transaction.phoneNumber}`, 25, 169);
+      ctx.fillText(`No. HP    : ${transaction.phoneNumber}`, 25, 174);
     }
 
     // Divider
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.setLineDash([4, 4]);
     ctx.beginPath();
-    ctx.moveTo(25, 185);
-    ctx.lineTo(width - 25, 185);
+    ctx.moveTo(25, 190);
+    ctx.lineTo(width - 25, 190);
     ctx.stroke();
+    ctx.setLineDash([]);
 
-    // Items
+    // Items Section
     ctx.fillStyle = '#0f172a';
     ctx.font = 'bold 12px sans-serif';
-    ctx.fillText('RINCIAN PESANAN', 25, 205);
+    ctx.fillText('RINCIAN PESANAN', 25, 212);
 
     ctx.font = '12px sans-serif';
-    ctx.fillText(transaction.paket || 'CUCI + KERING', 25, 228);
+    ctx.fillText(transaction.paket || 'CUCI + KERING', 25, 235);
     ctx.textAlign = 'right';
-    ctx.fillText(formatRupiah(totalBayar), width - 25, 228);
+    ctx.fillText(formatRupiah(totalBayar), width - 25, 235);
 
     ctx.textAlign = 'left';
-    let yPos = 250;
+    let yPos = 258;
     if (transaction.washerCoins > 0 || transaction.dryerCoins > 0) {
       ctx.fillStyle = '#64748b';
       ctx.font = '11px sans-serif';
       ctx.fillText(
-        `Koin: ${transaction.washerCoins} Washer + ${transaction.dryerCoins} Dryer`,
+        `• Koin Mesin: ${transaction.washerCoins} Washer + ${transaction.dryerCoins} Dryer`,
         25,
         yPos
       );
@@ -124,74 +127,119 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     if (transaction.item) {
       ctx.fillStyle = '#64748b';
       ctx.font = '11px sans-serif';
-      ctx.fillText(`Tambahan: ${transaction.item} (${transaction.jumlah || '1'})`, 25, yPos);
+      ctx.fillText(`• Item Tambahan: ${transaction.item} (${transaction.jumlah || '1'})`, 25, yPos);
       yPos += 18;
     }
 
     if (transaction.note) {
       ctx.fillStyle = '#94a3b8';
       ctx.font = 'italic 10px sans-serif';
-      ctx.fillText(`Note: ${transaction.note}`, 25, yPos);
+      ctx.fillText(`• Catatan: ${transaction.note}`, 25, yPos);
       yPos += 18;
     }
 
     // Divider
     ctx.beginPath();
+    ctx.setLineDash([4, 4]);
     ctx.moveTo(25, yPos + 10);
     ctx.lineTo(width - 25, yPos + 10);
     ctx.stroke();
+    ctx.setLineDash([]);
 
     // Payment details
-    yPos += 30;
-    ctx.fillStyle = '#334155';
+    yPos += 32;
+    ctx.fillStyle = '#475569';
     ctx.font = '11px sans-serif';
-    ctx.fillText('Metode Bayar', 25, yPos);
+    ctx.fillText('Metode Pembayaran', 25, yPos);
     ctx.textAlign = 'right';
+    ctx.font = 'bold 11px sans-serif';
     ctx.fillText(transaction.paymentMode || 'CASH', width - 25, yPos);
 
-    yPos += 22;
+    yPos += 24;
     ctx.textAlign = 'left';
     ctx.fillStyle = '#0f172a';
     ctx.font = 'bold 14px sans-serif';
     ctx.fillText('TOTAL BAYAR', 25, yPos);
     ctx.textAlign = 'right';
-    ctx.fillStyle = '#1d4ed8';
+    ctx.fillStyle = '#2563eb';
     ctx.fillText(formatRupiah(totalBayar), width - 25, yPos);
 
-    // Status stamp
-    yPos += 35;
-    ctx.fillStyle = isLunas ? '#059669' : '#d97706';
-    ctx.strokeStyle = isLunas ? '#059669' : '#d97706';
+    // Status stamp box
+    yPos += 36;
+    ctx.fillStyle = isLunas ? '#f0fdf4' : '#fffbeb';
+    ctx.strokeStyle = isLunas ? '#16a34a' : '#d97706';
     ctx.lineWidth = 1.5;
-    ctx.strokeRect(width / 2 - 60, yPos - 18, 120, 26);
+    ctx.beginPath();
+    ctx.roundRect(width / 2 - 70, yPos - 18, 140, 28, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = isLunas ? '#15803d' : '#b45309';
     ctx.font = 'bold 12px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(isLunas ? 'LUNAS' : 'PENDING', width / 2, yPos);
+    ctx.fillText(isLunas ? '✓ LUNAS' : 'PENDING', width / 2, yPos);
 
     // Footer
     yPos += 45;
     ctx.fillStyle = '#64748b';
     ctx.font = '10px sans-serif';
-    ctx.fillText('Terima kasih telah mencuci di TRICOINS!', width / 2, yPos);
-    ctx.fillText('Pakaian Bersih, Wangi & Bebas Kuman', width / 2, yPos + 14);
+    ctx.fillText('Terima kasih telah mencuci di TRICOINS LAUNDRY!', width / 2, yPos);
+    ctx.fillText('Pakaian Bersih, Harum & Bebas Bakteri', width / 2, yPos + 14);
 
+    return canvas;
+  };
+
+  const getReceiptBlob = async (): Promise<Blob | null> => {
+    const canvas = generateReceiptCanvas();
+    if (!canvas) return null;
+    return new Promise((resolve) => {
+      canvas.toBlob((blob) => resolve(blob), 'image/png');
+    });
+  };
+
+  const handleDownloadImage = () => {
+    const canvas = generateReceiptCanvas();
+    if (!canvas) return;
     const dataUrl = canvas.toDataURL('image/png');
     const link = document.createElement('a');
     link.download = `Struk_${receiptNo}.png`;
     link.href = dataUrl;
     link.click();
+    setShareFeedback('✓ File gambar struk PNG telah diunduh!');
+    setTimeout(() => setShareFeedback(null), 4000);
   };
 
-  const handleShareWhatsApp = () => {
-    const text = `*STRUK PEMBAYARAN TRICOINS LAUNDRY*
+  const handleCopyReceiptImage = async () => {
+    try {
+      setIsGeneratingImg(true);
+      const blob = await getReceiptBlob();
+      if (!blob) throw new Error('Gagal merender struk');
+
+      if (navigator.clipboard && (window as any).ClipboardItem) {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        setShareFeedback('✓ Foto struk berhasil disalin! Anda bisa langsung Paste (Ctrl+V) di WhatsApp.');
+      } else {
+        handleDownloadImage();
+      }
+    } catch (err) {
+      handleDownloadImage();
+    } finally {
+      setIsGeneratingImg(false);
+      setTimeout(() => setShareFeedback(null), 5000);
+    }
+  };
+
+  const handleShareWhatsApp = async () => {
+    setIsGeneratingImg(true);
+    const text = `*STRUK PEMBAYARAN RESMI TRICOINS LAUNDRY*
 No. Struk: ${receiptNo}
 Tanggal: ${formatIndonesianDate(selectedDate)}
 Pelanggan: ${transaction.customer}
 
-Rincian Layanan:
+Rincian Pesanan:
 - Paket: ${transaction.paket || 'Cuci + Kering'}
-- Koin: ${transaction.washerCoins} Washer, ${transaction.dryerCoins} Dryer
-${transaction.item ? `- Item: ${transaction.item}` : ''}
+- Koin Mesin: ${transaction.washerCoins} Washer, ${transaction.dryerCoins} Dryer
+${transaction.item ? `- Item Retail: ${transaction.item}` : ''}
 Metode Bayar: ${transaction.paymentMode}
 *Total: ${formatRupiah(totalBayar)}*
 Status: *${isLunas ? 'LUNAS' : 'PENDING'}*
@@ -204,6 +252,47 @@ Terima kasih atas kunjungan Anda di TRICOINS LAUNDRY!`;
       const intlPhone = `62${cleanPhone.slice(1)}`;
       targetUrl = `https://wa.me/${intlPhone}?text=${encodeURIComponent(text)}`;
     }
+
+    try {
+      const blob = await getReceiptBlob();
+      if (blob) {
+        const file = new File([blob], `Struk_${receiptNo}.png`, { type: 'image/png' });
+
+        // 1. Try Native Web Share API with image file (works on Android / iOS / supported desktop)
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            title: `Struk TRICOINS - ${transaction.customer}`,
+            text: text,
+            files: [file],
+          });
+          setIsGeneratingImg(false);
+          return;
+        }
+
+        // 2. Fallback: Copy image to clipboard so cashier can immediately Ctrl+V in WhatsApp chat
+        try {
+          if (navigator.clipboard && (window as any).ClipboardItem) {
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+          }
+        } catch (e) {
+          // Ignore clipboard permission issue
+        }
+
+        // 3. Download the PNG file automatically
+        const link = document.createElement('a');
+        link.download = `Struk_${receiptNo}.png`;
+        link.href = URL.createObjectURL(blob);
+        link.click();
+      }
+    } catch (err) {
+      console.warn('Share error fallback:', err);
+    } finally {
+      setIsGeneratingImg(false);
+    }
+
+    setShareFeedback(
+      '✓ Foto struk telah disalin ke clipboard & diunduh! Cukup tekan Tempel/Paste (Ctrl+V) di chat WhatsApp customer.'
+    );
     window.open(targetUrl, '_blank');
   };
 
@@ -338,31 +427,65 @@ Terima kasih atas kunjungan Anda di TRICOINS LAUNDRY!`;
           </div>
         </div>
 
+        {/* Feedback Alert for WhatsApp Image Share */}
+        {shareFeedback && (
+          <div className="px-4 py-2.5 bg-emerald-50 border-t border-emerald-200 text-emerald-800 text-xs flex items-center gap-2 animate-in fade-in">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span className="font-semibold">{shareFeedback}</span>
+          </div>
+        )}
+
         {/* Action Buttons with Tactile Feedback */}
-        <div className="p-3 bg-white border-t border-slate-200 grid grid-cols-3 gap-2">
-          <button
-            onClick={handlePrint}
-            className="flex items-center justify-center space-x-1 py-2 px-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all transform active:scale-95 active:brightness-95 hover:shadow-md cursor-pointer select-none"
-          >
-            <Printer className="w-3.5 h-3.5" />
-            <span>Print</span>
-          </button>
-
-          <button
-            onClick={handleDownloadImage}
-            className="flex items-center justify-center space-x-1 py-2 px-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all transform active:scale-95 active:brightness-95 hover:shadow-md cursor-pointer select-none"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>PDF/PNG</span>
-          </button>
-
+        <div className="p-3 bg-white border-t border-slate-200 space-y-2">
+          {/* Main WhatsApp Photo Share Button */}
           <button
             onClick={handleShareWhatsApp}
-            className="flex items-center justify-center space-x-1 py-2 px-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all transform active:scale-95 active:brightness-95 hover:shadow-md cursor-pointer select-none"
+            disabled={isGeneratingImg}
+            className="w-full flex items-center justify-center space-x-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 text-white rounded-xl text-xs sm:text-sm font-extrabold shadow-md transition-all transform active:scale-95 active:brightness-95 hover:shadow-lg cursor-pointer select-none"
           >
-            <Share2 className="w-3.5 h-3.5" />
-            <span>WhatsApp</span>
+            {isGeneratingImg ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <span>Menyiapkan Foto Struk...</span>
+              </>
+            ) : (
+              <>
+                <Share2 className="w-4 h-4" />
+                <span>Kirim Foto Struk ke WhatsApp</span>
+              </>
+            )}
           </button>
+
+          {/* Secondary Action Buttons */}
+          <div className="grid grid-cols-3 gap-2">
+            <button
+              onClick={handleCopyReceiptImage}
+              disabled={isGeneratingImg}
+              className="flex items-center justify-center space-x-1 py-2 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all transform active:scale-95 active:brightness-95 cursor-pointer select-none"
+              title="Salin foto struk ke clipboard agar bisa langsung di-paste"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+              <span>Salin Foto</span>
+            </button>
+
+            <button
+              onClick={handleDownloadImage}
+              className="flex items-center justify-center space-x-1 py-2 px-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold transition-all transform active:scale-95 active:brightness-95 cursor-pointer select-none"
+              title="Unduh foto struk PNG beresolusi tinggi"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Unduh PNG</span>
+            </button>
+
+            <button
+              onClick={handlePrint}
+              className="flex items-center justify-center space-x-1 py-2 px-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all transform active:scale-95 active:brightness-95 cursor-pointer select-none"
+              title="Cetak struk ke printer thermal / fisik"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>Print</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

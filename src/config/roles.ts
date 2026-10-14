@@ -35,6 +35,10 @@ const DEFAULT_USERS: UserAccessEntry[] = [
 
 const STORAGE_KEY = 'trcn_rbac_users';
 
+export function isRootSuperAdmin(email: string | null | undefined): boolean {
+  return email?.trim().toLowerCase() === 'tricoinss@gmail.com';
+}
+
 /**
  * Returns list of user access entries
  */
@@ -43,24 +47,36 @@ export function getUserAccessList(): UserAccessEntry[] {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed: UserAccessEntry[] = JSON.parse(stored);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        // Merge with default ensuring tricoinss@gmail.com is always present
-        const map = new Map<string, UserAccessEntry>();
-        DEFAULT_USERS.forEach((u) => map.set(u.email.toLowerCase(), u));
-        parsed.forEach((u) => map.set(u.email.toLowerCase(), u));
-        return Array.from(map.values());
+      if (Array.isArray(parsed)) {
+        // Ensure root account tricoinss@gmail.com is always present
+        const hasRoot = parsed.some((u) => u.email.toLowerCase() === 'tricoinss@gmail.com');
+        if (!hasRoot) {
+          const rootEntry: UserAccessEntry = {
+            email: 'tricoinss@gmail.com',
+            name: 'Revan & Admin Team',
+            role: 'admin',
+            invitedAt: '2026-10-01',
+            invitedBy: 'Sistem (Root Owner)',
+          };
+          const withRoot = [rootEntry, ...parsed];
+          saveUserAccessList(withRoot);
+          return withRoot;
+        }
+        return parsed;
       }
     }
   } catch (e) {
     console.error('Error loading RBAC users:', e);
   }
+  // Initial first-time setup
+  saveUserAccessList(DEFAULT_USERS);
   return DEFAULT_USERS;
 }
 
 /**
  * Save user list to localStorage
  */
-function saveUserAccessList(users: UserAccessEntry[]) {
+export function saveUserAccessList(users: UserAccessEntry[]) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(users));
   } catch (e) {
@@ -102,6 +118,38 @@ export function addUserAccess(entry: {
 }
 
 /**
+ * Edit existing user details (name, email, role)
+ */
+export function editUserAccess(
+  oldEmail: string,
+  updatedData: { email: string; name: string; role: 'admin' | 'cashier' }
+): UserAccessEntry[] {
+  const current = getUserAccessList();
+  const targetOld = oldEmail.trim().toLowerCase();
+  const targetNew = updatedData.email.trim().toLowerCase();
+
+  // Root owner email is protected from being changed
+  if (targetOld === 'tricoinss@gmail.com' && targetNew !== 'tricoinss@gmail.com') {
+    return current;
+  }
+
+  const updated = current.map((u) => {
+    if (u.email.toLowerCase() === targetOld) {
+      return {
+        ...u,
+        email: targetNew,
+        name: updatedData.name.trim() || u.name,
+        role: updatedData.role,
+      };
+    }
+    return u;
+  });
+
+  saveUserAccessList(updated);
+  return updated;
+}
+
+/**
  * Update user role (admin or cashier)
  */
 export function updateUserRole(email: string, newRole: 'admin' | 'cashier'): UserAccessEntry[] {
@@ -124,6 +172,14 @@ export function removeUserAccess(email: string): UserAccessEntry[] {
   const updated = current.filter((u) => u.email.toLowerCase() !== lowerEmail);
   saveUserAccessList(updated);
   return updated;
+}
+
+/**
+ * Reset user access list back to defaults (Root Admin only)
+ */
+export function resetUsersToDefault(): UserAccessEntry[] {
+  saveUserAccessList(DEFAULT_USERS);
+  return DEFAULT_USERS;
 }
 
 /**

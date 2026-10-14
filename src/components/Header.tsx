@@ -10,6 +10,7 @@ interface HeaderProps {
   onSync: () => void;
   onOpenSheetSelector: () => void;
   onLogout: () => void;
+  activeTab?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -19,9 +20,12 @@ export const Header: React.FC<HeaderProps> = ({
   onSync,
   onOpenSheetSelector,
   onLogout,
+  activeTab,
 }) => {
   const role = getAppRoleForEmail(user?.email);
   const isRoot = user?.email?.toLowerCase() === 'tricoinss@gmail.com';
+  const canAccessCashier = role === 'admin' || role === 'cashier' || isRoot;
+  const isCustomerTab = activeTab === 'customer-portal' || role === 'customer';
 
   return (
     <header className="bg-[#0b1329] text-white shadow-md sticky top-0 z-40 border-b border-slate-800">
@@ -60,35 +64,46 @@ export const Header: React.FC<HeaderProps> = ({
                 </span>
               )}
             </h1>
-            <button
-              onClick={onOpenSheetSelector}
-              className="flex items-center text-[11px] text-slate-400 hover:text-blue-300 transition-colors truncate max-w-[190px] sm:max-w-xs text-left"
-              title="Ganti Spreadsheet"
-            >
-              <FileSpreadsheet className="w-3 h-3 mr-1 text-emerald-400 shrink-0" />
-              <span className="truncate underline decoration-dotted">
-                {spreadsheetName || 'Hubungkan Spreadsheet'}
+
+            {/* Opsi Kasir Spreadsheet: Only editable & accessible by Kasir and Owner, NOT shown on Customer tab/role */}
+            {canAccessCashier && !isCustomerTab && (
+              <button
+                onClick={onOpenSheetSelector}
+                className="flex items-center text-[11px] text-slate-400 hover:text-blue-300 transition-colors truncate max-w-[190px] sm:max-w-xs text-left cursor-pointer"
+                title="Ganti atau Hubungkan File Spreadsheet Kasir"
+              >
+                <FileSpreadsheet className="w-3 h-3 mr-1 text-emerald-400 shrink-0" />
+                <span className="truncate underline decoration-dotted font-medium">
+                  {spreadsheetName || 'Hubungkan Spreadsheet'}
+                </span>
+              </button>
+            )}
+            {(!canAccessCashier || isCustomerTab) && (
+              <span className="text-[11px] text-cyan-400/80 font-medium flex items-center gap-1">
+                <span>Layanan Laundry Mandiri Koin Modern</span>
               </span>
-            </button>
+            )}
           </div>
         </div>
 
         {/* Action Buttons: Sync & Profile */}
         <div className="flex items-center space-x-2">
-          {/* Sync Button */}
-          <button
-            onClick={onSync}
-            disabled={isSyncing}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all transform active:scale-95 active:brightness-95 hover:shadow-md cursor-pointer select-none ${
-              isSyncing
-                ? 'bg-blue-900/60 text-blue-200 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-500 text-white shadow-sm'
-            }`}
-            title="Sinkronisasi Data dari Google Sheets"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-            <span className="hidden sm:inline">{isSyncing ? 'Sinkron...' : 'Sync'}</span>
-          </button>
+          {/* Sync Button: Only for Kasir & Owner */}
+          {canAccessCashier && !isCustomerTab && (
+            <button
+              onClick={onSync}
+              disabled={isSyncing}
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all transform active:scale-95 active:brightness-95 hover:shadow-md cursor-pointer select-none ${
+                isSyncing
+                  ? 'bg-blue-900/60 text-blue-200 cursor-not-allowed'
+                  : 'bg-blue-600 hover:bg-blue-500 text-white shadow-sm'
+              }`}
+              title="Sinkronisasi Data dari Google Sheets"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{isSyncing ? 'Sinkron...' : 'Sync'}</span>
+            </button>
+          )}
 
           {/* User Profile / Logout */}
           {user && (

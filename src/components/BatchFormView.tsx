@@ -19,6 +19,7 @@ import {
   UserPlus,
   UserCheck,
   Sparkles,
+  X,
 } from 'lucide-react';
 import { TransactionInput, SaveBatchResult, appendCustomerToSpreadsheet } from '../services/sheetsApi';
 import {
@@ -138,6 +139,27 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
       reader.readAsDataURL(file);
     }
   };
+
+  // Close sticky autocomplete dropdown when clicking outside or pressing Escape
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.customer-autocomplete-container')) {
+        setActiveSearchId(null);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setActiveSearchId(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   // Update customer fields and recalculate totals & coins
   const updateCustomer = (id: string, updates: Partial<CustomerFormState>) => {
@@ -370,7 +392,7 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
               <div className="p-4 space-y-4 text-xs">
                 {/* 1. Customer Name (with autocomplete) & Phone */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="relative">
+                  <div className="customer-autocomplete-container relative">
                     <label className="text-[11px] font-bold text-slate-700 block mb-1">
                       Nama Customer:
                     </label>
@@ -391,16 +413,27 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
 
                     {/* Autocomplete Dropdown from 400+ customer database */}
                     {activeSearchId === customer.id && searchMatches.length > 0 && (
-                      <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-20 max-h-48 overflow-y-auto">
-                        <div className="p-1.5 text-[10px] font-bold text-slate-400 uppercase bg-slate-50 border-b border-slate-100">
-                          Saran Pelanggan Terdaftar ({searchMatches.length})
+                      <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl z-30 max-h-52 overflow-y-auto">
+                        <div className="p-1.5 px-2.5 text-[10px] font-bold text-slate-500 uppercase bg-slate-100/90 border-b border-slate-200 flex items-center justify-between">
+                          <span>Saran Pelanggan Terdaftar ({searchMatches.length})</span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveSearchId(null);
+                            }}
+                            className="p-0.5 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition cursor-pointer"
+                            title="Tutup Saran"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                         {searchMatches.map((match) => (
                           <button
                             key={match.code}
                             type="button"
                             onClick={() => handleSelectCustomerRecord(customer.id, match)}
-                            className="w-full text-left p-2 hover:bg-blue-50 border-b border-slate-50 last:border-0 flex items-center justify-between cursor-pointer"
+                            className="w-full text-left p-2.5 hover:bg-blue-50 border-b border-slate-100 last:border-0 flex items-center justify-between cursor-pointer transition-colors"
                           >
                             <div>
                               <div className="font-bold text-slate-800 text-xs">

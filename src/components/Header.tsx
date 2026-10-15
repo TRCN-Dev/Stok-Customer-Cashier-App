@@ -1,7 +1,9 @@
-import React from 'react';
-import { RefreshCw, LogOut, FileSpreadsheet, ShieldCheck, User as UserIcon, Shield, Layers, UserCheck } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { RefreshCw, LogOut, FileSpreadsheet, ShieldCheck, User as UserIcon, Shield, Layers, UserCheck, Bell } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { getAppRoleForEmail } from '../config/roles';
+import { getUnreadDeletionCount } from '../services/deletionAudit';
+import { DeletionNotificationModal } from './DeletionNotificationModal';
 
 interface HeaderProps {
   user: User | null;
@@ -24,8 +26,21 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const role = getAppRoleForEmail(user?.email);
   const isRoot = user?.email?.toLowerCase() === 'tricoinss@gmail.com';
+  const isAdmin = role === 'admin' || isRoot;
   const canAccessCashier = role === 'admin' || role === 'cashier' || isRoot;
   const isCustomerTab = activeTab === 'customer-portal' || role === 'customer';
+
+  const [notificationModalOpen, setNotificationModalOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    const updateCount = () => {
+      setUnreadCount(getUnreadDeletionCount());
+    };
+    updateCount();
+    window.addEventListener('trcn_deletion_audit_updated', updateCount);
+    return () => window.removeEventListener('trcn_deletion_audit_updated', updateCount);
+  }, []);
 
   return (
     <header className="bg-[#0b1329] text-white shadow-md sticky top-0 z-40 border-b border-slate-800">
@@ -86,8 +101,24 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Action Buttons: Sync & Profile */}
+        {/* Action Buttons: Sync, Notifications, & Profile */}
         <div className="flex items-center space-x-2">
+          {/* Deletion Audit Notification Bell: For Owner & Admin */}
+          {isAdmin && (
+            <button
+              onClick={() => setNotificationModalOpen(true)}
+              className="relative p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-all transform active:scale-95 cursor-pointer"
+              title="Notifikasi & Log Hapus Transaksi oleh Kasir"
+            >
+              <Bell className="w-4 h-4 text-amber-400" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full bg-rose-500 text-white font-mono font-bold text-[10px] animate-pulse shadow-xs">
+                  {unreadCount}
+                </span>
+              )}
+            </button>
+          )}
+
           {/* Sync Button: Only for Kasir & Owner */}
           {canAccessCashier && !isCustomerTab && (
             <button
@@ -129,6 +160,16 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
       </div>
+
+      {/* Deletion Audit & Notification Modal */}
+      <DeletionNotificationModal
+        isOpen={notificationModalOpen}
+        onClose={() => {
+          setNotificationModalOpen(false);
+          setUnreadCount(getUnreadDeletionCount());
+        }}
+        currentUserEmail={user?.email}
+      />
     </header>
   );
 };

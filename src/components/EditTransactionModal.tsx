@@ -37,12 +37,11 @@ interface ItemState {
 }
 
 const DEFAULT_ITEMS = [
+  { name: 'DETERJEN TRI 2K', price: 2000 },
   { name: 'SOKLIN LIQUID 1K', price: 1000 },
   { name: 'DOWNY 1K', price: 1000 },
-  { name: 'PLASTIK KECIL 1K', price: 1000 },
-  { name: 'PLASTIK SEDANG 1K', price: 1000 },
-  { name: 'PLASTIK BESAR 2K', price: 2000 },
-  { name: 'PLASTIK JUMBO 3K', price: 3000 },
+  { name: 'PLASTIK 2K', price: 2000 },
+  { name: 'PLASTIK 3K', price: 3000 },
 ];
 
 export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
@@ -114,11 +113,29 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
   const [items, setItems] = useState<ItemState[]>(() => {
     const existingItemStr = transaction.item || '';
     const existingJumlahStr = transaction.jumlah || '';
-    const existingNames = existingItemStr.split('&').map((s) => s.trim().toUpperCase());
-    const existingQtys = existingJumlahStr.split('.').map((s) => parseInt(s.trim(), 10) || 1);
+    const existingNames = existingItemStr
+      .split(/[&+,]/)
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+    const existingQtys = existingJumlahStr
+      .split(/[.+]/)
+      .map((s) => parseInt(s.trim(), 10) || 1);
+
+    const matchesItem = (defaultName: string, existingName: string) => {
+      const def = defaultName.toUpperCase();
+      const ext = existingName.toUpperCase();
+      if (ext.includes(def) || def.includes(ext)) return true;
+      // Match DETERJEN / DITERJEN / DETERGENT:
+      if (def.includes('DETERJEN') && (ext.includes('DETER') || ext.includes('DITER'))) return true;
+      if (def.includes('SOKLIN') && ext.includes('SOKLIN')) return true;
+      if (def.includes('DOWNY') && ext.includes('DOWNY')) return true;
+      if (def.includes('PLASTIK 2K') && (ext.includes('PLASTIK 2K') || ext.includes('BESAR'))) return true;
+      if (def.includes('PLASTIK 3K') && (ext.includes('PLASTIK 3K') || ext.includes('JUMBO'))) return true;
+      return false;
+    };
 
     return DEFAULT_ITEMS.map((item) => {
-      const idx = existingNames.findIndex((n) => n.includes(item.name) || item.name.includes(n));
+      const idx = existingNames.findIndex((n) => matchesItem(item.name, n));
       return {
         ...item,
         qty: idx >= 0 ? existingQtys[idx] || 1 : 0,

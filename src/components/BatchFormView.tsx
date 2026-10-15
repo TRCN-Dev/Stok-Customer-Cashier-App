@@ -73,9 +73,9 @@ interface CustomerFormState {
 }
 
 const DEFAULT_ITEMS = [
+  { name: 'DETERJEN TRI 2K', price: 2000 },
   { name: 'SOKLIN LIQUID 1K', price: 1000 },
   { name: 'DOWNY 1K', price: 1000 },
-  { name: 'DETERJEN TRI 2K', price: 2000 },
   { name: 'PLASTIK 2K', price: 2000 },
   { name: 'PLASTIK 3K', price: 3000 },
 ];
@@ -95,11 +95,7 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
     return localStorage.getItem('trcn_qris_image') || null;
   });
 
-  const [customerList, setCustomerList] = useState<CustomerFormState[]>([createEmptyCustomer()]);
-  const [searchQueryMap, setSearchQueryMap] = useState<{ [id: string]: string }>({});
-  const [activeSearchId, setActiveSearchId] = useState<string | null>(null);
-  const [confirmationOpen, setConfirmationOpen] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const DRAFT_STORAGE_KEY = 'trcn_batch_form_draft';
 
   function createEmptyCustomer(): CustomerFormState {
     return {
@@ -111,20 +107,65 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
       isRegisteredMember: false,
       isRegisteringNew: false,
       status: 'LUNAS',
-      paymentMode: 'QRIS',
-      cuciKeringQty: 1, // Default 1 cuci + kering
+      paymentMode: 'CASH',
+      cuciKeringQty: 0, // Clean default: no auto-display counter of 1
       cuciSajaQty: 0,
       keringSajaQty: 0,
       items: DEFAULT_ITEMS.map((item) => ({ ...item, qty: 0 })),
-      washerCoins: 1,
-      dryerCoins: 1,
+      washerCoins: 0,
+      dryerCoins: 0,
       hargaCash: 0,
-      hargaQris: 20000,
+      hargaQris: 0,
       cashReceived: 0,
       note: '',
       isCustomSplit: false,
     };
   }
+
+  // Restore draft customer list on page reload so cashier selections are never lost
+  const [customerList, setCustomerList] = useState<CustomerFormState[]>(() => {
+    try {
+      const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to parse draft batch customer list:', e);
+    }
+    return [createEmptyCustomer()];
+  });
+
+  // Auto-save draft on user edits so page reload never loses selections
+  useEffect(() => {
+    try {
+      const hasContent = customerList.some(
+        (c) =>
+          c.customer.trim() ||
+          c.phoneNumber.trim() ||
+          c.cuciKeringQty > 0 ||
+          c.cuciSajaQty > 0 ||
+          c.keringSajaQty > 0 ||
+          (c.items || []).some((it) => it.qty > 0) ||
+          c.hargaCash > 0 ||
+          c.hargaQris > 0
+      );
+      if (hasContent) {
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(customerList));
+      } else {
+        localStorage.removeItem(DRAFT_STORAGE_KEY);
+      }
+    } catch (e) {
+      console.warn('Failed to save draft:', e);
+    }
+  }, [customerList]);
+
+  const [searchQueryMap, setSearchQueryMap] = useState<{ [id: string]: string }>({});
+  const [activeSearchId, setActiveSearchId] = useState<string | null>(null);
+  const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Handle QRIS Image upload
   const handleQrisUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -296,10 +337,18 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
 
       const payload = prepareTransactions();
       await onSaveBatch(payload);
+      localStorage.removeItem(DRAFT_STORAGE_KEY);
       onSuccessRedirect();
     } catch (err: any) {
       console.error('Error saving batch:', err);
       setErrorMsg(err.message || 'Gagal menyimpan transaksi ke Google Sheet.');
+    }
+  };
+
+  const handleResetForm = () => {
+    if (confirm('Kosongkan semua isian formulir input ini dan mulai dari awal?')) {
+      localStorage.removeItem(DRAFT_STORAGE_KEY);
+      setCustomerList([createEmptyCustomer()]);
     }
   };
 
@@ -317,6 +366,14 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
           <span className="font-bold text-slate-900 text-sm">{targetTabName}</span>
           <span className="text-slate-500 ml-1.5 font-medium">({formatIndonesianDate(selectedDate)})</span>
         </div>
+        <button
+          type="button"
+          onClick={handleResetForm}
+          className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:text-slate-800 hover:bg-slate-50 text-[11px] font-semibold transition cursor-pointer"
+          title="Kosongkan formulir dan reset isian"
+        >
+          Reset Formulir
+        </button>
       </div>
 
       {errorMsg && (
@@ -709,13 +766,22 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
                       <div
                         key={it.name}
                         className={`p-2 rounded-xl border transition ${
-                          it.qty > 0
+                          it.name.includes('DETERJEN')
+                            ? it.qty > 0
+                              ? 'bg-amber-50/80 border-amber-400 ring-2 ring-amber-300/40'
+                              : 'bg-amber-50/40 border-amber-300/80'
+                            : it.qty > 0
                             ? 'bg-blue-50/60 border-blue-300'
                             : 'bg-slate-50 border-slate-200'
                         }`}
                       >
-                        <div className="font-semibold text-slate-800 text-[11px] truncate">
-                          {it.name}
+                        <div className="font-semibold text-slate-800 text-[11px] truncate flex items-center justify-between">
+                          <span>{it.name}</span>
+                          {it.name.includes('DETERJEN') && (
+                            <span className="text-[9px] px-1 py-0.2 rounded bg-amber-200 text-amber-900 font-bold">
+                              Deterjen
+                            </span>
+                          )}
                         </div>
                         <div className="text-[10px] text-slate-500 font-medium">
                           {formatRupiah(it.price)}

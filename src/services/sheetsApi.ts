@@ -732,6 +732,61 @@ export async function updateSingleTransaction(
   return true;
 }
 
+/**
+ * Deletes / clears an existing transaction row in the sheet.
+ * Resets Columns B to N while preserving Column A (slot number) and Column O (BALANCE COIN).
+ */
+export async function deleteSingleTransaction(
+  spreadsheetId: string,
+  tabName: string,
+  rowNumber: number,
+  accessToken: string
+): Promise<boolean> {
+  const safeTab = tabName.replace(/'/g, "''");
+  const updateData = [
+    {
+      range: `'${safeTab}'!B${rowNumber}:N${rowNumber}`,
+      values: [
+        [
+          '', // B: customer
+          '', // C: phone
+          '', // D: payment mode
+          '', // E: item
+          '', // F: jumlah
+          '', // G: paket
+          0, // H: washer
+          0, // I: dryer
+          0, // J: cash
+          0, // K: qris
+          `=IF(M${rowNumber}="LUNAS",N(J${rowNumber})+N(K${rowNumber}),0)`, // L: bayar
+          '', // M: status
+          '', // N: note
+        ],
+      ],
+    },
+  ];
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      valueInputOption: 'USER_ENTERED',
+      data: updateData,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Gagal menghapus transaksi baris ${rowNumber} (${response.status})`);
+  }
+  return true;
+}
+
+
 export interface CoinLedgerResult {
   found: boolean;
   ledgerWasher: number;

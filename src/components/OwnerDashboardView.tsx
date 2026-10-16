@@ -145,13 +145,15 @@ export const OwnerDashboardView: React.FC<OwnerDashboardViewProps> = ({
   const [qrisUploadSuccess, setQrisUploadSuccess] = useState(false);
 
   const filledRows = (dayBlock?.rows || []).filter((r) => !r.isEmpty);
+  const paidRows = filledRows.filter(
+    (r) => r.status.toUpperCase() === 'LUNAS' || (r.bayar !== undefined && r.bayar > 0)
+  );
 
-  // Statistics calculation
-  const liveCashToday = filledRows.reduce((sum, r) => sum + (r.hargaCash || 0), 0);
-  const liveQrisToday = filledRows.reduce((sum, r) => sum + (r.hargaQris || 0), 0);
-  const liveOmzetToday = filledRows.reduce((sum, r) => {
+  // Statistics calculation: Only count paid transactions into Omzet and Cash/QRIS revenue per Issue #4!
+  const liveCashToday = paidRows.reduce((sum, r) => sum + (r.hargaCash || 0), 0);
+  const liveQrisToday = paidRows.reduce((sum, r) => sum + (r.hargaQris || 0), 0);
+  const liveOmzetToday = paidRows.reduce((sum, r) => {
     if (r.bayar && r.bayar > 0) return sum + r.bayar;
-    if (r.status.toUpperCase() === 'LUNAS') return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
     return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
   }, 0);
 

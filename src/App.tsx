@@ -17,12 +17,16 @@ import {
   readDayBlock,
   saveBatchTransactions,
   updateSingleTransaction,
+  deleteSingleTransaction,
   DayBlockResult,
+  SheetTransactionRow,
   SpreadsheetInfo,
   TransactionInput,
   SaveBatchResult,
 } from './services/sheetsApi';
-import { getTodayJakartaISO, getWeekInfoForDate } from './utils/dateUtils';
+import { addDeletionAuditLog } from './services/deletionAudit';
+import { getOfflineQueueCount, syncOfflineQueue } from './services/offlineQueue';
+import { getTodayJakartaISO, getWeekInfoForDate, formatIndonesianDate } from './utils/dateUtils';
 import { Header } from './components/Header';
 import { Navigation, MainTabType } from './components/Navigation';
 import { DateBanner } from './components/DateBanner';
@@ -88,6 +92,11 @@ export default function App() {
   const [isSavingBatch, setIsSavingBatch] = useState<boolean>(false);
   const [isUpdatingTrx, setIsUpdatingTrx] = useState<boolean>(false);
 
+  // Token Expiration and Offline State
+  const [isTokenExpired, setIsTokenExpired] = useState<boolean>(false);
+  const [offlineCount, setOfflineCount] = useState<number>(() => getOfflineQueueCount());
+  const [isSyncingOffline, setIsSyncingOffline] = useState<boolean>(false);
+
   // Initialize Firebase Auth Listener
   useEffect(() => {
     const unsubscribe = initAuth(
@@ -143,43 +152,98 @@ export default function App() {
 
   // Fetch Day Block from Sheet for current date
   const loadDayBlock = useCallback(
-    async (token: string, sheetId: string, dateStr: string) => {
-      setIsLoadingDayBlock(true);
+    async (token: string, sheetId: string, dateStr: string, isBackground = false) => {
+      if (!isBackground) {
+        setIsLoadingDayBlock(true);
+      }
       setDayBlockError(null);
 
       const weekInfo = getWeekInfoForDate(dateStr);
       try {
         const result = await readDayBlock(sheetId, weekInfo.tabName, dateStr, token);
         setDayBlock(result);
+        setIsTokenExpired(false);
         if (result.error) {
           setDayBlockError(result.error);
         }
       } catch (err: any) {
         console.error('Error reading day block:', err);
-        setDayBlockError(err.message || `Gagal membaca transaksi dari tab ${weekInfo.tabName}`);
-        setDayBlock(null);
+        const isAuth401 =
+          err?.message?.includes('invalid authentication credentials') ||
+          err?.message?.includes('OAuth 2 access token') ||
+          err?.message?.includes('401');
+
+        if (isAuth401) {
+          setIsTokenExpired(true);
+          setDayBlockError(
+            'Sesi Google Sheets kedaluwarsa (1 jam). Silakan klik "Perbarui Akses (1-Klik)" di atas untuk melanjutkan.'
+          );
+          // CRITICAL: Do NOT nullify dayBlock if we already have loaded data, user won't get blank screen!
+        } else {
+          setDayBlockError(err.message || `Gagal membaca transaksi dari tab ${weekInfo.tabName}`);
+          setDayBlock((prev) => prev); // keep previous
+        }
       } finally {
-        setIsLoadingDayBlock(false);
+        if (!isBackground) {
+          setIsLoadingDayBlock(false);
+        }
       }
     },
     []
   );
 
-  // Trigger load when token, sheetId, or selectedDate changes
+  // Trigger initial load when token, sheetId, or selectedDate changes
   useEffect(() => {
     if (accessToken && spreadsheetId && selectedDate) {
       loadDayBlock(accessToken, spreadsheetId, selectedDate);
     }
   }, [accessToken, spreadsheetId, selectedDate, loadDayBlock]);
 
-  // Live background synchronization every 15 seconds so changes made in Google Sheets appear in the app
+  // Calm background sync ONLY on live-trx or owner-dashboard, never interrupting edits or batch form (Issue #9)
   useEffect(() => {
-    if (!accessToken || !spreadsheetId || !selectedDate) return;
+    if (!accessToken || !spreadsheetId || !selectedDate || isTokenExpired) return;
+    if (activeTab !== 'live-trx' && activeTab !== 'owner-dashboard') return;
+
     const interval = setInterval(() => {
-      loadDayBlock(accessToken, spreadsheetId, selectedDate);
-    }, 15000);
+      // Do not sync if tab is hidden, or user is editing/saving
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (isSavingBatch || isUpdatingTrx) return;
+      loadDayBlock(accessToken, spreadsheetId, selectedDate, true);
+    }, 45000);
+
     return () => clearInterval(interval);
-  }, [accessToken, spreadsheetId, selectedDate, loadDayBlock]);
+  }, [accessToken, spreadsheetId, selectedDate, activeTab, isSavingBatch, isUpdatingTrx, isTokenExpired, loadDayBlock]);
+
+  // Offline Queue listener & Auto-Sync (Issue #10)
+  useEffect(() => {
+    const handleQueueUpdate = () => setOfflineCount(getOfflineQueueCount());
+    window.addEventListener('trcn_offline_queue_updated', handleQueueUpdate);
+    return () => window.removeEventListener('trcn_offline_queue_updated', handleQueueUpdate);
+  }, []);
+
+  const handleSyncOffline = async () => {
+    if (!accessToken || !spreadsheetId || isSyncingOffline) return;
+    setIsSyncingOffline(true);
+    try {
+      const res = await syncOfflineQueue(spreadsheetId, accessToken);
+      setOfflineCount(getOfflineQueueCount());
+      if (res.syncedCount > 0) {
+        await loadDayBlock(accessToken, spreadsheetId, selectedDate);
+      }
+    } finally {
+      setIsSyncingOffline(false);
+    }
+  };
+
+  useEffect(() => {
+    const handleOnline = () => {
+      if (accessToken && spreadsheetId && getOfflineQueueCount() > 0) {
+        handleSyncOffline();
+      }
+    };
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [accessToken, spreadsheetId]);
 
   // Handle Spreadsheet Selection
   const handleSelectSpreadsheet = (sheetInfo: SpreadsheetInfo) => {
@@ -222,6 +286,94 @@ export default function App() {
     setIsUpdatingTrx(true);
     try {
       await updateSingleTransaction(spreadsheetId, dayBlock.tabName, rowNumber, data, accessToken);
+      await loadDayBlock(accessToken, spreadsheetId, selectedDate);
+    } finally {
+      setIsUpdatingTrx(false);
+    }
+  };
+
+  // Handle Single Transaction Deletion (Issue #3)
+  const handleDeleteTransaction = async (
+    rowNumber: number,
+    targetTrx: SheetTransactionRow,
+    reason: string
+  ) => {
+    if (!accessToken || !spreadsheetId || !dayBlock) {
+      throw new Error('Spreadsheet belum terhubung atau sesi login berakhir.');
+    }
+    setIsUpdatingTrx(true);
+    try {
+      await deleteSingleTransaction(spreadsheetId, dayBlock.tabName, rowNumber, accessToken);
+
+      // Audit notification for deletion
+      addDeletionAuditLog({
+        deletedByEmail: user?.email || 'kasir@trcn.com',
+        deletedByName: user?.displayName || user?.email?.split('@')[0] || 'Kasir',
+        deletedByRole: isUserAdminAccount ? 'admin' : 'cashier',
+        targetDate: selectedDate,
+        tabName: dayBlock.tabName,
+        rowNumber,
+        slotNumber: targetTrx.slotNumber,
+        customer: targetTrx.customer,
+        phoneNumber: targetTrx.phoneNumber,
+        paket: targetTrx.paket,
+        item: targetTrx.item,
+        totalBayar: targetTrx.bayar || targetTrx.hargaCash + targetTrx.hargaQris,
+        paymentMode: targetTrx.paymentMode,
+        reason,
+      });
+
+      await loadDayBlock(accessToken, spreadsheetId, selectedDate);
+    } finally {
+      setIsUpdatingTrx(false);
+    }
+  };
+
+  // Handle Moving Transaction to Another Date (Issue #7)
+  const handleMoveTransaction = async (
+    sourceRowNumber: number,
+    sourceTrx: SheetTransactionRow,
+    targetDateStr: string,
+    updatedData: TransactionInput,
+    reason: string
+  ) => {
+    if (!accessToken || !spreadsheetId || !dayBlock) {
+      throw new Error('Spreadsheet belum terhubung atau sesi login berakhir.');
+    }
+    setIsUpdatingTrx(true);
+    try {
+      const targetWeek = getWeekInfoForDate(targetDateStr);
+
+      // 1. Write transaction into target date tab
+      await saveBatchTransactions(
+        spreadsheetId,
+        targetWeek.tabName,
+        targetDateStr,
+        [updatedData],
+        accessToken
+      );
+
+      // 2. Clear from current source date row
+      await deleteSingleTransaction(spreadsheetId, dayBlock.tabName, sourceRowNumber, accessToken);
+
+      // 3. Record move notification to owner & admin
+      addDeletionAuditLog({
+        deletedByEmail: user?.email || 'kasir@trcn.com',
+        deletedByName: user?.displayName || user?.email?.split('@')[0] || 'Kasir',
+        deletedByRole: isUserAdminAccount ? 'admin' : 'cashier',
+        targetDate: selectedDate,
+        tabName: dayBlock.tabName,
+        rowNumber: sourceRowNumber,
+        slotNumber: sourceTrx.slotNumber,
+        customer: sourceTrx.customer,
+        phoneNumber: sourceTrx.phoneNumber,
+        paket: sourceTrx.paket,
+        item: sourceTrx.item,
+        totalBayar: sourceTrx.bayar || sourceTrx.hargaCash + sourceTrx.hargaQris,
+        paymentMode: sourceTrx.paymentMode,
+        reason: `Dipindahkan ke tanggal ${formatIndonesianDate(targetDateStr)}. Alasan: ${reason}`,
+      });
+
       await loadDayBlock(accessToken, spreadsheetId, selectedDate);
     } finally {
       setIsUpdatingTrx(false);
@@ -271,6 +423,56 @@ export default function App() {
       {/* Main App Content when Authenticated */}
       {user && (
         <>
+          {/* Token Expired Recovery Banner (Issue #2) */}
+          {isTokenExpired && (
+            <div className="bg-amber-500 text-slate-950 px-4 py-2.5 flex flex-wrap items-center justify-between text-xs sm:text-sm font-semibold shadow-md">
+              <div className="flex items-center space-x-2">
+                <span className="text-base">⚠️</span>
+                <span>
+                  <b>Sesi Google Sheets berakhir (1 jam).</b> Data Anda tetap aman. Klik untuk perbarui akses tanpa logout.
+                </span>
+              </div>
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await googleSignIn();
+                    if (res?.accessToken) {
+                      setAccessToken(res.accessToken);
+                      setCachedAccessToken(res.accessToken);
+                      setIsTokenExpired(false);
+                      setDayBlockError(null);
+                      loadDayBlock(res.accessToken, spreadsheetId || '', selectedDate);
+                    }
+                  } catch (e: any) {
+                    console.error('Failed to refresh token:', e);
+                  }
+                }}
+                className="px-3 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition shadow-xs cursor-pointer shrink-0 mt-1 sm:mt-0"
+              >
+                Perbarui Akses Google (1-Klik)
+              </button>
+            </div>
+          )}
+
+          {/* Offline Pending Queue Banner (Issue #10) */}
+          {offlineCount > 0 && (
+            <div className="bg-sky-600 text-white px-4 py-2.5 flex flex-wrap items-center justify-between text-xs sm:text-sm font-semibold shadow-md">
+              <div className="flex items-center space-x-2">
+                <span className="text-base">📶</span>
+                <span>
+                  Ada <b>{offlineCount}</b> transaksi offline yang belum tersinkron ke Google Sheet.
+                </span>
+              </div>
+              <button
+                onClick={handleSyncOffline}
+                disabled={isSyncingOffline || !accessToken}
+                className="px-3 py-1 bg-white text-sky-800 rounded-lg text-xs font-bold hover:bg-sky-50 transition shadow-xs cursor-pointer shrink-0 mt-1 sm:mt-0 disabled:bg-slate-200"
+              >
+                {isSyncingOffline ? 'Menyinkronkan...' : 'Sinkronkan Sekarang'}
+              </button>
+            </div>
+          )}
+
           {/* Navigation Bar */}
           <Navigation
             activeTab={activeTab}
@@ -279,7 +481,7 @@ export default function App() {
             onChangeLayer={setActiveLayer}
             isUserAdminAccount={isUserAdminAccount}
             isUserCashierAccount={isUserCashierAccount}
-            liveTrxCount={dayBlock?.filledRowCount}
+            liveTrxCount={dayBlock?.paidRowCount !== undefined ? dayBlock.paidRowCount : dayBlock?.filledRowCount}
           />
 
           <main className="flex-1 max-w-4xl w-full mx-auto p-3 sm:p-4">
@@ -332,6 +534,8 @@ export default function App() {
                 onOpenSheetSelector={() => setIsSheetSelectorOpen(true)}
                 onGoToBatch={() => setActiveTab('batch')}
                 onUpdateTransaction={handleUpdateTransaction}
+                onMoveTransaction={handleMoveTransaction}
+                onDeleteTransaction={handleDeleteTransaction}
                 isUpdating={isUpdatingTrx}
                 spreadsheetName={spreadsheetName}
               />

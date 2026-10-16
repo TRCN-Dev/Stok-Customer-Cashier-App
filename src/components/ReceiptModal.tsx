@@ -170,7 +170,11 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     ctx.strokeStyle = isLunas ? '#16a34a' : '#d97706';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.roundRect(width / 2 - 70, yPos - 18, 140, 28, 6);
+    if ((ctx as any).roundRect) {
+      (ctx as any).roundRect(width / 2 - 70, yPos - 18, 140, 28, 6);
+    } else {
+      ctx.rect(width / 2 - 70, yPos - 18, 140, 28);
+    }
     ctx.fill();
     ctx.stroke();
 
@@ -293,7 +297,13 @@ Terima kasih atas kunjungan Anda di TRICOINS LAUNDRY!`;
     setShareFeedback(
       '✓ Foto struk telah disalin ke clipboard & diunduh! Cukup tekan Tempel/Paste (Ctrl+V) di chat WhatsApp customer.'
     );
-    window.open(targetUrl, '_blank');
+    const safeLink = document.createElement('a');
+    safeLink.href = targetUrl;
+    safeLink.target = '_blank';
+    safeLink.rel = 'noopener noreferrer';
+    document.body.appendChild(safeLink);
+    safeLink.click();
+    document.body.removeChild(safeLink);
   };
 
   return (

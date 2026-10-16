@@ -12,6 +12,9 @@ import {
   Plus,
   Minus,
   Sparkles,
+  Wrench,
+  Calendar,
+  Trash2,
 } from 'lucide-react';
 import { SheetTransactionRow, TransactionInput } from '../services/sheetsApi';
 import { formatRupiah } from '../utils/dateUtils';
@@ -26,7 +29,20 @@ interface EditTransactionModalProps {
   onClose: () => void;
   transaction: SheetTransactionRow | null;
   targetTabName: string;
+  selectedDate: string;
   onSaveEdit: (rowNumber: number, data: TransactionInput) => Promise<void>;
+  onMoveTransaction?: (
+    sourceRowNumber: number,
+    sourceTrx: SheetTransactionRow,
+    targetDateStr: string,
+    updatedData: TransactionInput,
+    reason: string
+  ) => Promise<void>;
+  onDeleteTransaction?: (
+    rowNumber: number,
+    sourceTrx: SheetTransactionRow,
+    reason: string
+  ) => Promise<void>;
   isSaving: boolean;
 }
 
@@ -49,7 +65,10 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
   onClose,
   transaction,
   targetTabName,
+  selectedDate,
   onSaveEdit,
+  onMoveTransaction,
+  onDeleteTransaction,
   isSaving,
 }) => {
   if (!isOpen || !transaction) return null;
@@ -61,6 +80,27 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
   const [selectedMember, setSelectedMember] = useState<CustomerRecord | null>(() => {
     return findCustomerExact(transaction.customer) || null;
   });
+
+  // Target Date for moving transaction to another day (Issue #7)
+  const [targetDateInput, setTargetDateInput] = useState<string>(selectedDate || '');
+  const [isMovingDate, setIsMovingDate] = useState(false);
+  const [moveReason, setMoveReason] = useState('');
+
+  // Quick nominal adjustment (Issue #8: +1k, -1k, etc.)
+  const [manualAdjustment, setManualAdjustment] = useState<number>(0);
+
+  // Extra coins due to machine failure / kendala mesin (Issue #5)
+  const [extraWasherKendala, setExtraWasherKendala] = useState<number>(0);
+  const [extraDryerKendala, setExtraDryerKendala] = useState<number>(0);
+
+  // QRIS overpayment with cash change (Issue #6)
+  const [isLebihBayarQris, setIsLebihBayarQris] = useState(false);
+  const [qrisTfNominal, setQrisTfNominal] = useState<number>(0);
+
+  // Deletion state with mandatory cashier reason (Issue #3)
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
+  const [deleteReason, setDeleteReason] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Parse existing pakets
   const parsePaketQty = (paketStr: string) => {
@@ -124,9 +164,15 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
     const matchesItem = (defaultName: string, existingName: string) => {
       const def = defaultName.toUpperCase();
       const ext = existingName.toUpperCase();
+      if (ext === def) return true;
       if (ext.includes(def) || def.includes(ext)) return true;
-      // Match DETERJEN / DITERJEN / DETERGENT:
-      if (def.includes('DETERJEN') && (ext.includes('DETER') || ext.includes('DITER'))) return true;
+      // Match DETERJEN / DITERJEN / DETERGENT / TRI 2K:
+      if (
+        def.includes('DETERJEN') &&
+        (ext.includes('DETER') || ext.includes('DITER') || ext.includes('TRI 2K') || ext.includes('DETERGENT'))
+      ) {
+        return true;
+      }
       if (def.includes('SOKLIN') && ext.includes('SOKLIN')) return true;
       if (def.includes('DOWNY') && ext.includes('DOWNY')) return true;
       if (def.includes('PLASTIK 2K') && (ext.includes('PLASTIK 2K') || ext.includes('BESAR'))) return true;
@@ -145,7 +191,12 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
 
   // Payment Mode
   const [paymentMode, setPaymentMode] = useState<'QRIS' | 'CASH' | 'SPLIT'>(
-    (transaction.paymentMode as any) || (transaction.hargaCash > 0 && transaction.hargaQris > 0 ? 'SPLIT' : transaction.hargaCash > 0 ? 'CASH' : 'QRIS')
+    (transaction.paymentMode as any) ||
+      (transaction.hargaCash > 0 && transaction.hargaQris > 0
+        ? 'SPLIT'
+        : transaction.hargaCash > 0
+        ? 'CASH'
+        : 'QRIS')
   );
 
   const [status, setStatus] = useState<'LUNAS' | 'TIDAK LUNAS'>(
@@ -207,11 +258,15 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
     };
   }, []);
 
-  // Compute Total Bayar
+  // Compute Total Bayar (incorporates manual adjustment)
   const totalPaketBayar =
     cuciKeringQty * 20000 + cuciSajaQty * 10000 + keringSajaQty * 10000;
   const totalItemsBayar = items.reduce((sum, it) => sum + it.qty * it.price, 0);
-  const totalBayar = totalPaketBayar + totalItemsBayar;
+  const totalBayar = Math.max(0, totalPaketBayar + totalItemsBayar + manualAdjustment);
+
+  // Effective coins including extra coins from broken machine
+  const effectiveWasherCoins = Math.max(0, washerCoins + extraWasherKendala);
+  const effectiveDryerCoins = Math.max(0, dryerCoins + extraDryerKendala);
 
   // Split calculations
   useEffect(() => {
@@ -252,7 +307,56 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
       finalQris = Math.max(0, totalBayar - splitCashInput);
     }
 
+    // Assemble comprehensive note
+    const noteParts: string[] = [];
+    if (note.trim()) noteParts.push(note.trim());
+    if (extraWasherKendala > 0 || extraDryerKendala > 0) {
+      const parts: string[] = [];
+      if (extraWasherKendala > 0) parts.push(`+${extraWasherKendala} Washer`);
+      if (extraDryerKendala > 0) parts.push(`+${extraDryerKendala} Dryer`);
+      noteParts.push(`[Kendala Mesin: ${parts.join(', ')}]`);
+    }
+    if (manualAdjustment !== 0) {
+      noteParts.push(`[Penyesuaian: ${manualAdjustment > 0 ? '+' : ''}${formatRupiah(manualAdjustment)}]`);
+    }
+    if (isLebihBayarQris && qrisTfNominal > totalBayar) {
+      const kembalianCash = qrisTfNominal - totalBayar;
+      noteParts.push(`[Lebih Bayar QRIS ${formatRupiah(qrisTfNominal)}, Kembalian Cash ${formatRupiah(kembalianCash)}]`);
+    }
+    const finalNote = noteParts.join(' ');
+
     try {
+      // If cashier chose to move transaction to another day
+      if (isMovingDate && targetDateInput && targetDateInput !== selectedDate && onMoveTransaction) {
+        if (!moveReason.trim()) {
+          setErrorMsg('Alasan pemindahan transaksi wajib diisi!');
+          return;
+        }
+        await onMoveTransaction(
+          transaction.rowNumber,
+          transaction,
+          targetDateInput,
+          {
+            customer: customer.trim() || 'Pelanggan',
+            phoneNumber: phoneNumber.trim(),
+            paymentMode,
+            item: itemStr,
+            jumlah: jumlahStr,
+            paket: paketStr,
+            washerCoins: effectiveWasherCoins,
+            dryerCoins: effectiveDryerCoins,
+            hargaCash: finalCash,
+            hargaQris: finalQris,
+            status,
+            note: finalNote,
+          },
+          moveReason.trim()
+        );
+        onClose();
+        return;
+      }
+
+      // Normal edit save
       await onSaveEdit(transaction.rowNumber, {
         customer: customer.trim() || 'Pelanggan',
         phoneNumber: phoneNumber.trim(),
@@ -260,16 +364,34 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
         item: itemStr,
         jumlah: jumlahStr,
         paket: paketStr,
-        washerCoins,
-        dryerCoins,
+        washerCoins: effectiveWasherCoins,
+        dryerCoins: effectiveDryerCoins,
         hargaCash: finalCash,
         hargaQris: finalQris,
         status,
-        note: note.trim(),
+        note: finalNote,
       });
       onClose();
     } catch (err: any) {
       setErrorMsg(err.message || 'Gagal menyimpan perubahan transaksi.');
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteReason.trim()) {
+      setErrorMsg('Alasan penghapusan transaksi wajib diisi!');
+      return;
+    }
+    if (!onDeleteTransaction) return;
+    setIsDeleting(true);
+    setErrorMsg(null);
+    try {
+      await onDeleteTransaction(transaction.rowNumber, transaction, deleteReason.trim());
+      onClose();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Gagal menghapus transaksi.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -512,64 +634,216 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
             </div>
           </div>
 
-          {/* 3. Koin Ringkasan */}
-          <div className="p-3 bg-slate-100/90 rounded-2xl border border-slate-200 flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <Coins className="w-4 h-4 text-amber-500" />
-              <span className="font-bold text-slate-700">Kebutuhan Koin Mesin:</span>
+          {/* 3. Koin Mesin & Kendala Mesin */}
+          <div className="space-y-2">
+            <div className="p-3 bg-slate-100/90 rounded-2xl border border-slate-200 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Coins className="w-4 h-4 text-amber-500" />
+                <span className="font-bold text-slate-700">Kebutuhan Koin Mesin:</span>
+              </div>
+              <div className="flex items-center space-x-3">
+                <span className="px-2 py-0.5 rounded-lg bg-cyan-100 text-cyan-800 font-mono font-bold text-xs border border-cyan-200">
+                  Washer: {effectiveWasherCoins}
+                </span>
+                <span className="px-2 py-0.5 rounded-lg bg-orange-100 text-orange-800 font-mono font-bold text-xs border border-orange-200">
+                  Dryer: {effectiveDryerCoins}
+                </span>
+              </div>
             </div>
-            <div className="flex items-center space-x-3">
-              <span className="px-2 py-0.5 rounded-lg bg-cyan-100 text-cyan-800 font-mono font-bold text-xs border border-cyan-200">
-                Washer: {washerCoins}
-              </span>
-              <span className="px-2 py-0.5 rounded-lg bg-orange-100 text-orange-800 font-mono font-bold text-xs border border-orange-200">
-                Dryer: {dryerCoins}
-              </span>
-            </div>
-          </div>
 
-          {/* 4. Deterjen & Plastik (Items Retail) */}
-          <div className="space-y-2 pt-2 border-t border-slate-100">
-            <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
-              Item Tambahan (Deterjen &amp; Plastik):
-            </label>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {items.map((item) => (
-                <div
-                  key={item.name}
-                  className={`p-2.5 rounded-xl border flex flex-col justify-between transition-all ${
-                    item.qty > 0
-                      ? 'border-indigo-400 bg-indigo-50/60'
-                      : 'border-slate-200 bg-slate-50'
-                  }`}
-                >
-                  <div className="mb-1.5">
-                    <div className="font-bold text-slate-800 text-[11px] leading-tight truncate">
-                      {item.name}
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      {formatRupiah(item.price)}
-                    </div>
+            {/* Feature #5: Extra Coins due to Broken/Stuck Machine */}
+            <div className="p-3 bg-amber-50/70 rounded-2xl border border-amber-200 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-1.5 text-xs font-bold text-amber-900">
+                  <Wrench className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Tambahan Koin Kendala / Mesin Rusak:</span>
+                </div>
+                <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">
+                  Tanpa Biaya Tambahan ke Customer
+                </span>
+              </div>
+              <p className="text-[10px] text-amber-800 leading-tight">
+                Gunakan koin ekstra ini bila mesin washer atau dryer macet/rusak saat operasional. Koin tercatat di pembukuan koin tanpa menagih customer.
+              </p>
+              <div className="grid grid-cols-2 gap-2 pt-0.5">
+                <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-amber-200">
+                  <div>
+                    <div className="font-bold text-[11px] text-slate-800">Washer Ekstra</div>
+                    <div className="text-[10px] text-slate-500 font-mono">+{extraWasherKendala} Koin</div>
                   </div>
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-1.5">
                     <button
                       type="button"
-                      onClick={() => handleItemQtyChange(item.name, -1)}
-                      className="w-6 h-6 rounded bg-white text-slate-700 border border-slate-300 font-bold text-xs hover:bg-slate-100 transition active:scale-95 cursor-pointer"
+                      onClick={() => setExtraWasherKendala(Math.max(0, extraWasherKendala - 1))}
+                      className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 font-bold text-xs cursor-pointer"
                     >
                       -
                     </button>
-                    <span className="font-mono font-bold text-xs text-slate-900">{item.qty}</span>
+                    <span className="font-mono font-bold text-xs w-4 text-center">{extraWasherKendala}</span>
                     <button
                       type="button"
-                      onClick={() => handleItemQtyChange(item.name, 1)}
-                      className="w-6 h-6 rounded bg-indigo-600 text-white font-bold text-xs hover:bg-indigo-700 transition active:scale-95 shadow-xs cursor-pointer"
+                      onClick={() => setExtraWasherKendala(extraWasherKendala + 1)}
+                      className="w-6 h-6 rounded bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs cursor-pointer shadow-xs"
                     >
                       +
                     </button>
                   </div>
                 </div>
-              ))}
+
+                <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-amber-200">
+                  <div>
+                    <div className="font-bold text-[11px] text-slate-800">Dryer Ekstra</div>
+                    <div className="text-[10px] text-slate-500 font-mono">+{extraDryerKendala} Koin</div>
+                  </div>
+                  <div className="flex items-center space-x-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setExtraDryerKendala(Math.max(0, extraDryerKendala - 1))}
+                      className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 font-bold text-xs cursor-pointer"
+                    >
+                      -
+                    </button>
+                    <span className="font-mono font-bold text-xs w-4 text-center">{extraDryerKendala}</span>
+                    <button
+                      type="button"
+                      onClick={() => setExtraDryerKendala(extraDryerKendala + 1)}
+                      className="w-6 h-6 rounded bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs cursor-pointer shadow-xs"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 4. Deterjen & Plastik (Items Retail) - Separated DETERJEN TRI 2K */}
+          <div className="space-y-2 pt-2 border-t border-slate-100">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
+                Item Tambahan (Deterjen &amp; Plastik):
+              </label>
+              <span className="text-[10px] text-amber-700 font-bold bg-amber-100 px-2 py-0.5 rounded-md">
+                DETERJEN TRI 2K: Rp 2.000
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {items.map((item) => {
+                const isDeterjen = item.name.includes('DETERJEN') || item.name.includes('DITERJEN');
+                return (
+                  <div
+                    key={item.name}
+                    className={`p-2.5 rounded-xl border flex flex-col justify-between transition-all ${
+                      isDeterjen
+                        ? item.qty > 0
+                          ? 'border-amber-500 bg-amber-50/80 ring-2 ring-amber-400/30'
+                          : 'border-amber-300 bg-amber-50/40'
+                        : item.qty > 0
+                        ? 'border-indigo-400 bg-indigo-50/60'
+                        : 'border-slate-200 bg-slate-50'
+                    }`}
+                  >
+                    <div className="mb-1.5">
+                      <div className="font-bold text-slate-800 text-[11px] leading-tight truncate flex items-center justify-between gap-1">
+                        <span>{item.name}</span>
+                        {isDeterjen && (
+                          <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 shrink-0">
+                            TRI 2K
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-500 font-semibold">
+                        {formatRupiah(item.price)}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={() => handleItemQtyChange(item.name, -1)}
+                        className="w-6 h-6 rounded bg-white text-slate-700 border border-slate-300 font-bold text-xs hover:bg-slate-100 transition active:scale-95 cursor-pointer"
+                      >
+                        -
+                      </button>
+                      <span className="font-mono font-bold text-xs text-slate-900">{item.qty}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleItemQtyChange(item.name, 1)}
+                        className={`w-6 h-6 rounded text-white font-bold text-xs transition active:scale-95 shadow-xs cursor-pointer ${
+                          isDeterjen
+                            ? 'bg-amber-600 hover:bg-amber-700'
+                            : 'bg-indigo-600 hover:bg-indigo-700'
+                        }`}
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Feature #8: Quick Nominal Adjustment (+/- 1k) */}
+          <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                <span>Opsi Tambahan Nominal (Tombol 1k):</span>
+              </div>
+              {manualAdjustment !== 0 && (
+                <span
+                  className={`text-[11px] font-bold font-mono px-2 py-0.5 rounded-full ${
+                    manualAdjustment > 0
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                      : 'bg-rose-100 text-rose-800 border border-rose-300'
+                  }`}
+                >
+                  {manualAdjustment > 0 ? '+' : ''}
+                  {formatRupiah(manualAdjustment)}
+                </span>
+              )}
+            </div>
+            <p className="text-[10px] text-slate-500">
+              Tombol cepat untuk menambahkan atau mengurangi nominal transaksi (misal: biaya tambahan Rp 1.000 atau pembulatan).
+            </p>
+            <div className="flex flex-wrap gap-1.5 pt-0.5">
+              <button
+                type="button"
+                onClick={() => setManualAdjustment((prev) => prev + 1000)}
+                className="px-2.5 py-1 bg-white hover:bg-blue-50 border border-slate-300 rounded-lg text-xs font-bold text-blue-700 cursor-pointer transition active:scale-95"
+              >
+                +1k (+1.000)
+              </button>
+              <button
+                type="button"
+                onClick={() => setManualAdjustment((prev) => prev + 2000)}
+                className="px-2.5 py-1 bg-white hover:bg-blue-50 border border-slate-300 rounded-lg text-xs font-bold text-blue-700 cursor-pointer transition active:scale-95"
+              >
+                +2k (+2.000)
+              </button>
+              <button
+                type="button"
+                onClick={() => setManualAdjustment((prev) => prev + 5000)}
+                className="px-2.5 py-1 bg-white hover:bg-blue-50 border border-slate-300 rounded-lg text-xs font-bold text-blue-700 cursor-pointer transition active:scale-95"
+              >
+                +5k (+5.000)
+              </button>
+              <button
+                type="button"
+                onClick={() => setManualAdjustment((prev) => prev - 1000)}
+                className="px-2.5 py-1 bg-white hover:bg-rose-50 border border-slate-300 rounded-lg text-xs font-bold text-rose-700 cursor-pointer transition active:scale-95"
+              >
+                -1k (-1.000)
+              </button>
+              {manualAdjustment !== 0 && (
+                <button
+                  type="button"
+                  onClick={() => setManualAdjustment(0)}
+                  className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 rounded-lg text-xs font-semibold text-slate-700 cursor-pointer transition active:scale-95"
+                >
+                  Reset (0)
+                </button>
+              )}
             </div>
           </div>
 
@@ -645,6 +919,57 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
                 </button>
               </div>
             </div>
+
+            {/* Feature #6: Salah Transfer QRIS Lebih (Kembalian Cash) */}
+            {(paymentMode === 'QRIS' || paymentMode === 'SPLIT') && (
+              <div className="p-3 bg-purple-50 rounded-2xl border border-purple-200 space-y-2">
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isLebihBayarQris}
+                    onChange={(e) => {
+                      setIsLebihBayarQris(e.target.checked);
+                      if (e.target.checked && qrisTfNominal === 0) {
+                        setQrisTfNominal(totalBayar);
+                      }
+                    }}
+                    className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500"
+                  />
+                  <span className="font-bold text-xs text-purple-900">
+                    🔄 Salah Transfer QRIS Berlebih / Kembalian Cash
+                  </span>
+                </label>
+                {isLebihBayarQris && (
+                  <div className="pt-1 space-y-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] font-bold text-purple-800 block mb-0.5">
+                          Nominal QRIS Ditransfer Customer (Rp):
+                        </label>
+                        <input
+                          type="number"
+                          value={qrisTfNominal || ''}
+                          onChange={(e) => setQrisTfNominal(Number(e.target.value) || 0)}
+                          placeholder="Contoh: 25000, 50000..."
+                          className="w-full px-2.5 py-1.5 rounded-lg border border-purple-300 bg-white font-mono font-bold text-xs focus:ring-2 focus:ring-purple-500"
+                        />
+                      </div>
+                      <div className="p-2 bg-white rounded-lg border border-purple-200 flex flex-col justify-center">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase">
+                          Kembalian Cash Wajib Diberikan:
+                        </span>
+                        <span className="text-sm font-black font-mono text-purple-700">
+                          {formatRupiah(Math.max(0, qrisTfNominal - totalBayar))}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-purple-700 italic">
+                      Kelebihan transfer QRIS dan nominal kembalian cash akan otomatis dicatat pada rincian transaksi.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Cash Calculator & Quick Money Buttons */}
             {paymentMode === 'CASH' && (
@@ -737,6 +1062,56 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
               </div>
             )}
 
+            {/* Feature #7: Move Transaction to Another Date */}
+            <div className="p-3 bg-blue-50/70 rounded-2xl border border-blue-200 space-y-2">
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isMovingDate}
+                  onChange={(e) => setIsMovingDate(e.target.checked)}
+                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
+                />
+                <span className="font-bold text-xs text-blue-900 flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Pindahkan Transaksi ke Tanggal Lain (Transaksi Susulan / Kemarin)</span>
+                </span>
+              </label>
+              {isMovingDate && (
+                <div className="pt-2 space-y-2 border-t border-blue-200/60">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-700 block mb-1">
+                        Pilih Tanggal Tujuan:
+                      </label>
+                      <input
+                        type="date"
+                        value={targetDateInput}
+                        onChange={(e) => setTargetDateInput(e.target.value)}
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-blue-300 bg-white text-xs font-semibold focus:ring-2 focus:ring-blue-500"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-700 block mb-1">
+                        Alasan Pemindahan (Wajib - Notifikasi ke Admin):
+                      </label>
+                      <input
+                        type="text"
+                        value={moveReason}
+                        onChange={(e) => setMoveReason(e.target.value)}
+                        placeholder="Contoh: Baru transfer hari ini untuk cucian kemarin..."
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-blue-300 bg-white text-xs focus:ring-2 focus:ring-blue-500"
+                        required={isMovingDate}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-blue-800 leading-tight">
+                    Transaksi akan dipindahkan ke lembar tanggal tujuan, dikosongkan dari hari ini, dan pemberitahuan otomatis dikirimkan ke Owner &amp; Admin.
+                  </p>
+                </div>
+              )}
+            </div>
+
             {/* Note */}
             <div>
               <label className="text-[11px] font-bold text-slate-700 block mb-1">
@@ -752,32 +1127,90 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
             </div>
           </div>
 
+          {/* Feature #3: Delete Confirmation Section inside Modal */}
+          {isConfirmingDelete && (
+            <div className="p-3 bg-rose-50 border border-rose-300 rounded-2xl space-y-2 animate-in fade-in">
+              <div className="flex items-center space-x-1.5 text-xs font-bold text-rose-900">
+                <Trash2 className="w-4 h-4 text-rose-600" />
+                <span>Konfirmasi Hapus Transaksi #{transaction.slotNumber}</span>
+              </div>
+              <p className="text-[11px] text-rose-800">
+                Peringatan: Penghapusan transaksi oleh kasir akan dicatat di log audit dan mengirimkan notifikasi ke Owner &amp; Admin.
+              </p>
+              <div>
+                <label className="text-[10px] font-bold text-rose-900 block mb-1">
+                  Alasan Penghapusan (Wajib diisi):
+                </label>
+                <input
+                  type="text"
+                  value={deleteReason}
+                  onChange={(e) => setDeleteReason(e.target.value)}
+                  placeholder="Contoh: Customer batal mencuci / salah input ganda..."
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-rose-300 bg-white text-xs font-medium focus:ring-2 focus:ring-rose-500"
+                  autoFocus
+                />
+              </div>
+              <div className="flex justify-end space-x-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmingDelete(false)}
+                  className="px-3 py-1 bg-white border border-slate-300 text-slate-700 font-semibold rounded-lg text-xs hover:bg-slate-100 cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  disabled={isDeleting || !deleteReason.trim()}
+                  className="px-3 py-1 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-400 text-white font-bold rounded-lg text-xs cursor-pointer flex items-center space-x-1"
+                >
+                  {isDeleting ? 'Menghapus...' : 'Ya, Hapus Sekarang'}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Action Buttons */}
-          <div className="pt-3 border-t border-slate-200 flex justify-end space-x-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 font-semibold cursor-pointer hover:bg-slate-100 transition"
-            >
-              Batal
-            </button>
-            <button
-              type="submit"
-              disabled={isSaving}
-              className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-bold rounded-xl shadow-md transition-all transform active:scale-95 cursor-pointer flex items-center space-x-1.5"
-            >
-              {isSaving ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Menyimpan...</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Simpan Perubahan</span>
-                </>
-              )}
-            </button>
+          <div className="pt-3 border-t border-slate-200 flex items-center justify-between">
+            {onDeleteTransaction && !isConfirmingDelete ? (
+              <button
+                type="button"
+                onClick={() => setIsConfirmingDelete(true)}
+                className="px-3 py-1.5 text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-xl text-xs font-bold flex items-center space-x-1 border border-rose-200 cursor-pointer transition active:scale-95"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Hapus Transaksi</span>
+              </button>
+            ) : (
+              <div />
+            )}
+
+            <div className="flex space-x-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 font-semibold cursor-pointer hover:bg-slate-100 transition"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={isSaving}
+                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-bold rounded-xl shadow-md transition-all transform active:scale-95 cursor-pointer flex items-center space-x-1.5"
+              >
+                {isSaving ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Menyimpan...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Simpan Perubahan</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </form>
       </div>

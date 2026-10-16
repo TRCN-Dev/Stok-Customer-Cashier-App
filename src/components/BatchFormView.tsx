@@ -20,8 +20,11 @@ import {
   UserCheck,
   Sparkles,
   X,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { TransactionInput, SaveBatchResult, appendCustomerToSpreadsheet } from '../services/sheetsApi';
+import { addToOfflineQueue } from '../services/offlineQueue';
 import {
   CustomerRecord,
   searchCustomer,
@@ -166,6 +169,21 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
   const [activeSearchId, setActiveSearchId] = useState<string | null>(null);
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [offlineSuccessMsg, setOfflineSuccessMsg] = useState<string | null>(null);
+  const [isDeviceOnline, setIsDeviceOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+
+  useEffect(() => {
+    const handleOnline = () => setIsDeviceOnline(true);
+    const handleOffline = () => setIsDeviceOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   // Handle QRIS Image upload
   const handleQrisUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -336,11 +354,41 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
       });
 
       const payload = prepareTransactions();
+      if (!isDeviceOnline || !accessToken || !spreadsheetId) {
+        addToOfflineQueue(selectedDate, targetTabName, payload);
+        localStorage.removeItem(DRAFT_STORAGE_KEY);
+        setOfflineSuccessMsg(
+          `✓ Mode Offline: ${payload.length} transaksi berhasil disimpan di perangkat! Akan otomatis disinkronkan ke Google Sheet saat koneksi online.`
+        );
+        setTimeout(() => {
+          onSuccessRedirect();
+        }, 1600);
+        return;
+      }
+
       await onSaveBatch(payload);
       localStorage.removeItem(DRAFT_STORAGE_KEY);
       onSuccessRedirect();
     } catch (err: any) {
       console.error('Error saving batch:', err);
+      // Auto-fallback to offline queue on network/fetch errors
+      if (
+        !isDeviceOnline ||
+        err?.message?.includes('Failed to fetch') ||
+        err?.message?.includes('Network') ||
+        err?.message?.includes('offline')
+      ) {
+        const payload = prepareTransactions();
+        addToOfflineQueue(selectedDate, targetTabName, payload);
+        localStorage.removeItem(DRAFT_STORAGE_KEY);
+        setOfflineSuccessMsg(
+          `✓ Disimpan ke Antrean Offline: Koneksi sedang tidak stabil. ${payload.length} transaksi telah diamankan di perangkat dan akan disinkronkan otomatis!`
+        );
+        setTimeout(() => {
+          onSuccessRedirect();
+        }, 1800);
+        return;
+      }
       setErrorMsg(err.message || 'Gagal menyimpan transaksi ke Google Sheet.');
     }
   };
@@ -375,6 +423,23 @@ export const BatchFormView: React.FC<BatchFormViewProps> = ({
           Reset Formulir
         </button>
       </div>
+
+      {/* Offline Mode Alert */}
+      {!isDeviceOnline && (
+        <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl text-amber-900 text-xs flex items-center space-x-2">
+          <WifiOff className="w-4 h-4 text-amber-600 shrink-0" />
+          <div className="flex-1">
+            <span className="font-bold">Mode Offline Aktif:</span> Anda tetap dapat mencatat transaksi kasir seperti biasa. Data akan tersimpan di perangkat dan disinkronkan saat online kembali.
+          </div>
+        </div>
+      )}
+
+      {offlineSuccessMsg && (
+        <div className="p-3.5 bg-emerald-50 border border-emerald-300 rounded-2xl text-emerald-900 text-xs flex items-start space-x-2 animate-in fade-in">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+          <div className="flex-1 font-semibold">{offlineSuccessMsg}</div>
+        </div>
+      )}
 
       {errorMsg && (
         <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 text-xs flex items-start space-x-2">

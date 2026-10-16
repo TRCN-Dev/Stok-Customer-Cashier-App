@@ -44,6 +44,8 @@ export interface DayBlockResult {
   rows: SheetTransactionRow[];
   firstEmptyRow?: number; // 1-indexed sheet row for writing next transaction
   filledRowCount: number;
+  paidRowCount?: number;
+  pendingRowCount?: number;
   rawRows?: any[][];
   error?: string;
 }
@@ -478,13 +480,21 @@ export async function readDayBlock(
   }
 
   // Calculate live sums directly from loaded transaction rows
-  const actualCash = rows.filter((r) => !r.isEmpty).reduce((sum, r) => sum + (r.hargaCash || 0), 0);
-  const actualQris = rows.filter((r) => !r.isEmpty).reduce((sum, r) => sum + (r.hargaQris || 0), 0);
-  const actualWasher = rows.filter((r) => !r.isEmpty).reduce((sum, r) => sum + (r.washerCoins || 0), 0);
-  const actualDryer = rows.filter((r) => !r.isEmpty).reduce((sum, r) => sum + (r.dryerCoins || 0), 0);
-  const actualBayar = rows.filter((r) => !r.isEmpty).reduce((sum, r) => {
+  // RULE (Issue #4): Pending transactions are NOT included in total transactions or money until paid!
+  const filledRows = rows.filter((r) => !r.isEmpty);
+  const paidRows = filledRows.filter(
+    (r) => r.status?.toUpperCase() === 'LUNAS' || (r.bayar !== undefined && r.bayar > 0)
+  );
+  const pendingRows = filledRows.filter((r) => !paidRows.includes(r));
+  const paidRowCount = paidRows.length;
+  const pendingRowCount = pendingRows.length;
+
+  const actualCash = paidRows.reduce((sum, r) => sum + (r.hargaCash || 0), 0);
+  const actualQris = paidRows.reduce((sum, r) => sum + (r.hargaQris || 0), 0);
+  const actualWasher = filledRows.reduce((sum, r) => sum + (r.washerCoins || 0), 0);
+  const actualDryer = filledRows.reduce((sum, r) => sum + (r.dryerCoins || 0), 0);
+  const actualBayar = paidRows.reduce((sum, r) => {
     if (r.bayar && r.bayar > 0) return sum + r.bayar;
-    if (r.status?.toUpperCase() === 'LUNAS') return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
     return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
   }, 0);
 
@@ -513,6 +523,8 @@ export async function readDayBlock(
     rows,
     firstEmptyRow,
     filledRowCount,
+    paidRowCount,
+    pendingRowCount,
     rawRows: rawRows.slice(headerRowIndex, headerRowIndex + 22),
   };
 }

@@ -19,6 +19,8 @@ import {
   Plus,
   Pencil,
   Receipt,
+  Trash2,
+  X,
 } from 'lucide-react';
 import { DayBlockResult, SheetTransactionRow, TransactionInput } from '../services/sheetsApi';
 import { formatIndonesianDate, formatRupiah } from '../utils/dateUtils';
@@ -34,6 +36,14 @@ interface LiveTrxViewProps {
   onOpenSheetSelector: () => void;
   onGoToBatch?: () => void;
   onUpdateTransaction?: (rowNumber: number, data: TransactionInput) => Promise<void>;
+  onMoveTransaction?: (
+    sourceRowNumber: number,
+    sourceTrx: SheetTransactionRow,
+    targetDateStr: string,
+    updatedData: TransactionInput,
+    reason: string
+  ) => Promise<void>;
+  onDeleteTransaction?: (rowNumber: number, trx: SheetTransactionRow, reason: string) => Promise<void>;
   isUpdating?: boolean;
   spreadsheetName: string | null;
 }
@@ -47,6 +57,8 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
   onOpenSheetSelector,
   onGoToBatch,
   onUpdateTransaction,
+  onMoveTransaction,
+  onDeleteTransaction,
   isUpdating = false,
   spreadsheetName,
 }) => {
@@ -56,17 +68,28 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
   const [editingTransaction, setEditingTransaction] = useState<SheetTransactionRow | null>(null);
   const [receiptTransaction, setReceiptTransaction] = useState<SheetTransactionRow | null>(null);
 
+  // Deletion modal state for cashier / admin
+  const [deletingTrx, setDeletingTrx] = useState<SheetTransactionRow | null>(null);
+  const [deleteReason, setDeleteReason] = useState('');
+  const [isDeletingTrx, setIsDeletingTrx] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   // Filter filled transactions
   const filledRows = (dayBlock?.rows || []).filter((r) => !r.isEmpty);
 
-  // Live aggregated totals directly from rows (guarantees immediate update even if sheet formula lags)
-  const liveTotalCash = filledRows.reduce((sum, r) => sum + (r.hargaCash || 0), 0);
-  const liveTotalQris = filledRows.reduce((sum, r) => sum + (r.hargaQris || 0), 0);
+  // RULE (Issue #4): Pending transactions are NOT included in total transactions or money until paid!
+  const paidRows = filledRows.filter(
+    (r) => r.status?.toUpperCase() === 'LUNAS' || (r.bayar !== undefined && r.bayar > 0)
+  );
+  const pendingRows = filledRows.filter((r) => !paidRows.includes(r));
+
+  // Live aggregated totals directly from paid rows (guarantees immediate update and pending is excluded until paid!)
+  const liveTotalCash = paidRows.reduce((sum, r) => sum + (r.hargaCash || 0), 0);
+  const liveTotalQris = paidRows.reduce((sum, r) => sum + (r.hargaQris || 0), 0);
   const liveTotalWasher = filledRows.reduce((sum, r) => sum + (r.washerCoins || 0), 0);
   const liveTotalDryer = filledRows.reduce((sum, r) => sum + (r.dryerCoins || 0), 0);
-  const liveTotalBayar = filledRows.reduce((sum, r) => {
+  const liveTotalBayar = paidRows.reduce((sum, r) => {
     if (r.bayar && r.bayar > 0) return sum + r.bayar;
-    if (r.status?.toUpperCase() === 'LUNAS') return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
     return sum + (r.hargaCash || 0) + (r.hargaQris || 0);
   }, 0);
 
@@ -75,7 +98,27 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
   const displayTotalBayar = Math.max(dayBlock?.headerRow?.totalTxBayar || 0, liveTotalBayar);
   const displayTotalWasher = Math.max(dayBlock?.headerRow?.totalWasher || 0, liveTotalWasher);
   const displayTotalDryer = Math.max(dayBlock?.headerRow?.totalDryer || 0, liveTotalDryer);
-  const displayTxCount = Math.max(dayBlock?.filledRowCount || 0, filledRows.length);
+  // Total transaction count only counts PAID transactions per Issue #4
+  const displayTxCount = paidRows.length;
+
+  const handleConfirmDelete = async () => {
+    if (!deletingTrx || !deleteReason.trim()) {
+      setDeleteError('Alasan penghapusan wajib diisi!');
+      return;
+    }
+    if (!onDeleteTransaction) return;
+    setIsDeletingTrx(true);
+    setDeleteError(null);
+    try {
+      await onDeleteTransaction(deletingTrx.rowNumber, deletingTrx, deleteReason.trim());
+      setDeletingTrx(null);
+      setDeleteReason('');
+    } catch (err: any) {
+      setDeleteError(err.message || 'Gagal menghapus transaksi.');
+    } finally {
+      setIsDeletingTrx(false);
+    }
+  };
 
   const filteredRows = filledRows.filter((row) => {
     const matchesSearch =
@@ -150,7 +193,7 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
               <div className="flex items-center justify-between text-blue-200 text-xs font-medium mb-1">
                 <span>TOTAL TRANSAKSI HARI INI</span>
                 <span className="text-[11px] bg-blue-500/30 px-2 py-0.5 rounded-full font-mono">
-                  {displayTxCount} Transaksi (Unlimited)
+                  {displayTxCount} Lunas{pendingRows.length > 0 ? ` (+${pendingRows.length} Pending)` : ''}
                 </span>
               </div>
               <div className="text-2xl font-black tracking-tight">
@@ -362,6 +405,21 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
                             <span>Edit</span>
                           </button>
                         )}
+                        {onDeleteTransaction && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeletingTrx(trx);
+                              setDeleteReason('');
+                              setDeleteError(null);
+                            }}
+                            className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] transition-all transform active:scale-95 active:brightness-95 hover:shadow-xs cursor-pointer select-none"
+                            title="Hapus Transaksi (Dengan Alasan Kasir)"
+                          >
+                            <Trash2 className="w-3 h-3 text-rose-600" />
+                            <span>Hapus</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -471,11 +529,14 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
             onClose={() => setEditingTransaction(null)}
             transaction={editingTransaction}
             targetTabName={dayBlock.tabName}
+            selectedDate={selectedDate}
             onSaveEdit={async (rowNum, data) => {
               if (onUpdateTransaction) {
                 await onUpdateTransaction(rowNum, data);
               }
             }}
+            onMoveTransaction={onMoveTransaction}
+            onDeleteTransaction={onDeleteTransaction}
             isSaving={isUpdating}
           />
 
@@ -486,6 +547,103 @@ export const LiveTrxView: React.FC<LiveTrxViewProps> = ({
             transaction={receiptTransaction}
             selectedDate={selectedDate}
           />
+
+          {/* Delete Transaction Modal for Cashier / Admin (Issue #3) */}
+          {deletingTrx && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
+              <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-5 border border-slate-200 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center space-x-2 text-rose-700 font-bold text-sm sm:text-base">
+                    <Trash2 className="w-5 h-5 text-rose-600" />
+                    <span>Hapus Transaksi #{deletingTrx.slotNumber}</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setDeletingTrx(null);
+                      setDeleteReason('');
+                      setDeleteError(null);
+                    }}
+                    className="p-1 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200 space-y-1 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Pelanggan:</span>
+                    <span className="font-bold text-slate-800">{deletingTrx.customer || 'Tanpa Nama'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Paket Layanan:</span>
+                    <span className="font-semibold text-slate-800">{deletingTrx.paket || '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Total Transaksi:</span>
+                    <span className="font-black text-rose-600">
+                      {formatRupiah(deletingTrx.bayar || deletingTrx.hargaCash + deletingTrx.hargaQris)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-[11px] flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <span>
+                    <b>Pemberitahuan Kasir:</b> Setiap penghapusan transaksi akan otomatis dicatat dalam log audit dan mengirimkan notifikasi ke Owner &amp; Admin.
+                  </span>
+                </div>
+
+                {deleteError && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs">
+                    {deleteError}
+                  </div>
+                )}
+
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Alasan Penghapusan (Wajib diisi):
+                  </label>
+                  <textarea
+                    value={deleteReason}
+                    onChange={(e) => setDeleteReason(e.target.value)}
+                    placeholder="Contoh: Customer batal mencuci / salah input transaksi..."
+                    rows={2}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="flex justify-end space-x-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeletingTrx(null);
+                      setDeleteReason('');
+                      setDeleteError(null);
+                    }}
+                    className="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 font-semibold text-xs hover:bg-slate-100 cursor-pointer"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmDelete}
+                    disabled={isDeletingTrx || !deleteReason.trim()}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-400 text-white font-bold rounded-xl text-xs shadow-md transition-all active:scale-95 cursor-pointer flex items-center space-x-1.5"
+                  >
+                    {isDeletingTrx ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        <span>Menghapus...</span>
+                      </>
+                    ) : (
+                      <span>Konfirmasi Hapus</span>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
